@@ -55,7 +55,7 @@ flags.DEFINE_float('radius_multiplier', 2.0, help='Multiplier for all connectivi
 flags.DEFINE_float('connection_radius', 0.6, help='connectivity radius for graph.')
 flags.DEFINE_integer('layers', 5, help='Number of GNN layers.')
 flags.DEFINE_integer('hidden_dim', 64, help='Number of neurons in hidden layers.')
-flags.DEFINE_integer('dim', 3, help='The dimension of concrete simulation.')
+flags.DEFINE_integer('dim', 2, help='The dimension of concrete simulation.')
 flags.DEFINE_integer('particle_type_embedding_size', 9, help='Embedding size for particle types.')
 flags.DEFINE_integer('input_sequence_length', 3, help='Number of input timesteps for velocity calculation.')
 

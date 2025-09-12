@@ -16,6 +16,8 @@ import time
 from absl import flags
 from absl import app
 
+sys.path.insert(0, "/home/jovyan/work/sgnn")
+
 from gns import learned_simulator
 from gns import noise_utils
 from gns import reading_utils
@@ -37,7 +39,7 @@ flags.DEFINE_string('output_path', 'rollouts/', help='The path for saving output
 flags.DEFINE_float('connection_radius', 0.6, help='connectivity radius for graph.')
 flags.DEFINE_integer('layers', 5, help='Number of GNN layers.')
 flags.DEFINE_integer('hidden_dim', 64, help='Number of neurons in hidden layers.')
-flags.DEFINE_integer('dim', 3, help='The dimension of concrete simulation.')
+flags.DEFINE_integer('dim', 2, help='The dimension of concrete simulation.')
 flags.DEFINE_integer('particle_type_embedding_size', 9, help='Embedding size for particle types.')
 flags.DEFINE_integer('input_sequence_length', 3, help='Number of input timesteps for velocity calculation.')
 

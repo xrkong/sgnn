@@ -1,12 +1,15 @@
 # Cmd to run
 # Train
-CUDA_VISIBLE_DEVICES=0 python gns/multi_scale/train_multi_scale.py --mode=train --data_path=./datasets/taylor_impact_2d/data_processed/ --model_path=./models/Taylor_impact_2d/ --output_path=./rollouts/Taylor_impact_2d/ --batch_size=1 --noise_std=0.001 --connection_radius=0.1 --layers=5 --hidden_dim=64 --lr_init=0.001 --ntraining_steps=10000 --lr_decay_steps=3000 --dim=2 --project_name=Segment-3D --run_name=NS1e-3_R0.015_L5N64 --nsave_steps=1000 --log=False
+CUDA_VISIBLE_DEVICES=0 python gns/train.py --mode=train --data_path=./datasets/taylor_impact_2d/data_processed/ --model_path=./models/Taylor_impact_2d/ --output_path=./rollouts/Taylor_impact_2d/ --batch_size=4 --noise_std=0.02 --connection_radius=1.2 --layers=10 --hidden_dim=128 --lr_init=0.001 --ntraining_steps=100000 --lr_decay_steps=20000 --input_sequence_length=6 --project_name=Taylor_impact_2d --run_name=Seq6_R1.2_NS0.02_L10_N128 --nsave_steps=2000 -log=True
+
+# Train msgnn
+CUDA_VISIBLE_DEVICES=0 python gns/multi_scale/train_multi_scale.py --mode=train --data_path=./datasets/taylor_impact_2d/onecase_data_processed/ --model_path=./models/Taylor_impact_2d/ --output_path=./rollouts/Taylor_impact_2d/ --radius_multiplier=3 --batch_size=32 --noise_std=0.02 --layers=10 --hidden_dim=128 --lr_init=0.001 --ntraining_steps=10000 --lr_decay_steps=2000 --dim=2 --project_name=Taylor_impact_2d_OneCase --run_name=OneCase_RM3_NS0.02_L10_N128 --nsave_steps=2000 -log=True
 
 # Rollout
-CUDA_VISIBLE_DEVICES=0 python -m gns.train --mode=rollout --data_path=/home/jovyan/share/EPIMETHEUS-LOCAL/8TB-share/share/qilin/gns_data/Concrete2D-T-Step2/ --model_path=./models/Taylor_impact_2d/NS1e-3_R0.015_L5N64/ --model_file=model-010000.pt --output_path=./rollouts/Taylor_impact_2d/ --batch_size=1 --noise_std=0.001 --connection_radius=0.015 --layers=5 --hidden_dim=64 --dim=2 --project_name=Segment-3D --run_name=nsNS1_R15_L5N64  --log=False
+CUDA_VISIBLE_DEVICES=0 python gns/multi_scale/train_multi_scale.py --mode=rollout --data_path=./datasets/taylor_impact_2d/onecase_data_processed/ --model_path=./models/Taylor_impact_2d/OneCase_RM3_NS0.02_L10_N128/ --model_file=model-010000.pt --output_path=./rollouts/Taylor_impact_2d/ --radius_multiplier=3 --noise_std=0.02 --layers=10 --hidden_dim=128 --dim=2 --project_name=Taylor_impact_2d --run_name=OneCase_RM3_NS0.02_L10_N128
 
 # Visualisation
-python -m gns.render_rollout_2d_T --rollout_path=rollouts/Taylor_impact_2d/rollout_0.pkl --output_path=rollouts/Taylor_impact_2d/rollout_0.gif
+python -m gns.render_rollout_taylor_impact_2d --rollout_path=rollouts/Taylor_impact_2d/OneCase_RM3_NS0.02_L10_N128/ --output_path=rollouts/Taylor_impact_2d/OneCase_RM3_NS0.02_L10_N128/ --batch_mode=True
 
 
 # Notes

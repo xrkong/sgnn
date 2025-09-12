@@ -4,6 +4,7 @@ wandb/
 # Data
 /data/
 datasets/taylor_impact_2d/data_processed/
+datasets/taylor_impact_2d/onecase_data_processed/
 
 # Rollouts
 rollouts/

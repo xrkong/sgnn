@@ -5,7 +5,7 @@
 # Use relative path that works across different computers
 # The data should be in: <workspace_root>/datasets/taylor_impact_2d/raw_data/
 raw_data_path: "/home/jovyan/share/EPIMETHEUS-LOCAL/8TB-share/share/qilin/gns_data/Concrete2D-T/npz/"
-output_data_path: "./data_processed"
+output_data_path: "./onecase_data_processed"
 
 # Dataset parameters
 step_size: 2                    # Step size for downsampling
@@ -16,8 +16,9 @@ random_seed: 42                 # Random seed for reproducible splits
 default_connectivity_radius: 0.6   # cslh * spacing = 1.2 * 0.5 = 0.6 mm
 
 # Validation and test set identifiers (from original notebook)
-val_set: ['60-120', '80-140', '100-180']
-test_set: ['60-130', '80-150', '100-170']
+train_set: ['80-150']
+val_set: ['80-150']
+test_set: ['80-150']
 
 # Data processing parameters
 boundary_particles_to_remove: 4  # Number of boundary particles to remove

@@ -71,9 +71,12 @@ def predict(
     
     # Load simulator
     try:
-        simulator.load(config['model_path'] + config['model_file'])
-    except:
-        print("Failed to load model weights!")
+        model_path = Path(config['model_path']) / config['run_name'] / config['model_file']
+        simulator.load(str(model_path))
+        print(f"✅ Loaded model from: {model_path}")
+    except Exception as e:
+        print(f"❌ Failed to load model weights from {config['model_path']}{config['run_name']}/{config['model_file']}")
+        print(f"Error: {e}")
         sys.exit(1)
 
     simulator.to(device)

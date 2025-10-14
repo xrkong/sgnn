@@ -1,0 +1,45 @@
+# Multi-Scale GNN Training Configuration
+
+# Mode & Paths
+mode: train
+data_path: "./datasets/taylor_impact_2d/data_processed/"
+model_path: "./models/"
+output_path: "./rollouts/"
+
+# Multi-Scale Parameters
+num_scales: 3
+window_size: 3
+radius_multiplier: 2.0
+
+# Model Parameters
+connection_radius: 0.6
+layers: 5
+hidden_dim: 64
+dim: 2
+particle_type_embedding_size: 9
+input_sequence_length: 3
+
+# Training Parameters
+batch_size: 32
+noise_std: 0.02
+ntraining_steps: 10000
+nsave_steps: 1000
+
+# Learning Rate
+lr_init: 0.001
+lr_decay: 0.1
+lr_decay_steps: 2000
+
+# Logging
+log: false
+project_name: "Taylor_impact_2d_MS"
+run_name: "MS_default"
+
+# Model Loading (optional)
+model_file: null
+train_state_file: "train_state.pt"
+
+# Inference
+inference_mode: autoregressive
+debug_graph: false
+

@@ -6,91 +6,93 @@ This script trains a MultiScaleSimulator on the Taylor Impact dataset using stat
 It extends the original training script to support multi-scale graph neural networks.
 """
 
-import collections
 import json
-import numpy as np
 import os
-import os.path as osp
 import sys
 import torch
 import pickle
-import glob
-import re
-
-import tree
-import wandb
+import yaml
+import argparse
 import time
+from pathlib import Path
 
-from absl import flags
-from absl import app
+import wandb
 
-# Add the project root to the Python path
-sys.path.append(os.path.dirname(os.path.dirname(os.path.dirname(__file__))))
+# Benchmarking utilities
+class ResourceMonitor:
+    """Monitor GPU memory and runtime."""
+    def __init__(self, device):
+        self.device = device
+        self.is_cuda = device.type == 'cuda'
+        self.max_memory = 0
+        self.start_time = None
+        
+    def start(self):
+        """Start monitoring."""
+        if self.is_cuda:
+            torch.cuda.reset_peak_memory_stats(self.device)
+            torch.cuda.synchronize(self.device)
+        self.start_time = time.time()
+        
+    def stop(self):
+        """Stop monitoring and return stats."""
+        if self.is_cuda:
+            torch.cuda.synchronize(self.device)
+        elapsed_time = time.time() - self.start_time
+        
+        if self.is_cuda:
+            max_memory_mb = torch.cuda.max_memory_allocated(self.device) / 1024 / 1024
+            current_memory_mb = torch.cuda.memory_allocated(self.device) / 1024 / 1024
+        else:
+            max_memory_mb = 0
+            current_memory_mb = 0
+            
+        return {
+            'elapsed_time': elapsed_time,
+            'max_memory_mb': max_memory_mb,
+            'current_memory_mb': current_memory_mb
+        }
+    
+    def get_current_memory(self):
+        """Get current GPU memory usage in MB."""
+        if self.is_cuda:
+            return torch.cuda.memory_allocated(self.device) / 1024 / 1024
+        return 0
+
+# Add project root to path (go up 3 levels from this file)
+PROJECT_ROOT = Path(__file__).resolve().parent.parent.parent
+sys.path.insert(0, str(PROJECT_ROOT))
 
 from gns.multi_scale.multi_scale_simulator import MultiScaleSimulator
 from gns import noise_utils
-from gns import reading_utils
 from gns.multi_scale.data_loader_multi_scale import (
     get_multi_scale_data_loader_by_samples,
     get_multi_scale_data_loader_by_trajectories
 )
 from gns.multi_scale import validate_multi_scale
 from gns.multi_scale.validate_multi_scale import validate_multi_scale_simulator
-from gns import evaluate
 
-# Meta parameters
-flags.DEFINE_enum(
-    'mode', 'train', ['train', 'valid', 'rollout'], help=(
-        'Train model, validation or rollout evaluation.'))
-flags.DEFINE_string('data_path', None, help='The dataset directory.')
-flags.DEFINE_string('model_path', 'models/', help=('The path for saving checkpoints of the model.'))
-flags.DEFINE_string('output_path', 'rollouts/', help='The path for saving outputs (e.g. rollouts).')
+# Load configuration from file
+def load_config(config_path):
+    """Load configuration from YAML file."""
+    config_file = Path(config_path)
+    
+    # Resolve relative paths
+    if not config_file.is_absolute():
+        # Try relative to current working directory first
+        if config_file.exists():
+            config_file = config_file.resolve()
+        # Otherwise try relative to this script
+        elif (Path(__file__).parent / config_file).exists():
+            config_file = (Path(__file__).parent / config_file).resolve()
+        else:
+            raise FileNotFoundError(f"Config file not found: {config_path}")
+    
+    with open(config_file, 'r') as f:
+        return yaml.safe_load(f)
 
-# Multi-scale parameters
-flags.DEFINE_integer('num_scales', 3, help='Number of scales in the multi-scale hierarchy.')
-flags.DEFINE_integer('window_size', 3, help='Sampling window size for mesh levels.')
-flags.DEFINE_float('radius_multiplier', 2.0, help='Multiplier for all connectivity radius calculations.')
-
-# Model parameters
-flags.DEFINE_float('connection_radius', 0.6, help='connectivity radius for graph.')
-flags.DEFINE_integer('layers', 5, help='Number of GNN layers.')
-flags.DEFINE_integer('hidden_dim', 64, help='Number of neurons in hidden layers.')
-flags.DEFINE_integer('dim', 2, help='The dimension of concrete simulation.')
-flags.DEFINE_integer('particle_type_embedding_size', 9, help='Embedding size for particle types.')
-flags.DEFINE_integer('input_sequence_length', 3, help='Number of input timesteps for velocity calculation.')
-
-# Training parameters
-flags.DEFINE_integer('batch_size', 2, help='The batch size.')
-flags.DEFINE_float('noise_std', 2e-2, help='The std deviation of the noise.')
-flags.DEFINE_integer('ntraining_steps', int(1E6), help='Number of training steps.')
-flags.DEFINE_integer('nsave_steps', int(5000), help='Number of steps at which to save the model.')
-
-# Debug parameters
-flags.DEFINE_bool('debug_graph', False, help='Enable graph connectivity debugging and testing.')
-
-# Inference mode parameters
-flags.DEFINE_enum('inference_mode', 'autoregressive', ['autoregressive', 'one_step'], help=(
-    'Inference mode: autoregressive or one_step prediction.'))
-
-# Continue training parameters
-flags.DEFINE_string('model_file', None, help=(
-    'Model filename (.pt) to resume from. Can also use "latest" to default to newest file.'))
-flags.DEFINE_string('train_state_file', 'train_state.pt', help=(
-    'Train state filename (.pt) to resume from. Can also use "latest" to default to newest file.'))
-
-# Learning rate parameters
-flags.DEFINE_float('lr_init', 1e-3, help='Initial learning rate.')
-flags.DEFINE_float('lr_decay', 0.1, help='Learning rate decay.')
-flags.DEFINE_integer('lr_decay_steps', int(4e5), help='Learning rate decay steps.')
-
-# Wandb log parameters
-flags.DEFINE_bool('log', False, help='if use wandb log.')
-flags.DEFINE_string('project_name', 'GNS-tmp', help='project name for wandb log.')
-flags.DEFINE_string('run_name', 'runrunrun', help='Run name for wandb log.')
-
-FLAGS = flags.FLAGS
-
-Stats = collections.namedtuple('Stats', ['mean', 'std'])
+# Global config - will be loaded in main()
+config = None
 
 
 def predict(
@@ -106,7 +108,7 @@ def predict(
     """
     # Load simulator
     try:
-        simulator.load(FLAGS.model_path + FLAGS.model_file)
+        simulator.load(config['model_path'] + config['model_file'])
     except:
         print("Failed to load model weights!")
         sys.exit(1)
@@ -115,23 +117,23 @@ def predict(
     simulator.eval()
 
     # Output path
-    if not os.path.exists(FLAGS.output_path):
-        os.makedirs(FLAGS.output_path)
+    if not os.path.exists(config['output_path']):
+        os.makedirs(config['output_path'])
 
     # Use `valid`` set for eval mode if not use `test`
-    split = 'test' if FLAGS.mode == 'rollout' else 'valid'
+    split = 'test' if config['mode'] == 'rollout' else 'valid'
 
     data_trajs = get_multi_scale_data_loader_by_trajectories(
-        path=osp.join(FLAGS.data_path, f'{split}.npz'),
-        num_scales=FLAGS.num_scales,
-        window_size=FLAGS.window_size,
-        radius_multiplier=FLAGS.radius_multiplier
+        path=str(Path(config['data_path']) / f'{split}.npz'),
+        num_scales=config['num_scales'],
+        window_size=config['window_size'],
+        radius_multiplier=config['radius_multiplier']
     )
 
     eval_loss = []
     with torch.no_grad():
         for example_i, data_traj in enumerate(data_trajs):
-            nsteps = metadata['sequence_length'] - FLAGS.input_sequence_length
+            nsteps = metadata['sequence_length'] - config['input_sequence_length']
             n_particles_per_example = data_traj['n_particles_per_example'].to(device)
             positions = data_traj['positions'].to(device)
             particle_type = data_traj['particle_type'].to(device)
@@ -148,10 +150,10 @@ def predict(
                 n_particles_per_example=n_particles_per_example,
                 strains=strains,
                 nsteps=nsteps,
-                dim=FLAGS.dim,
+                dim=config['dim'],
                 device=device,
-                input_sequence_length=FLAGS.input_sequence_length,
-                inference_mode=FLAGS.inference_mode
+                input_sequence_length=config['input_sequence_length'],
+                inference_mode=config['inference_mode']
             )
 
             example_output['metadata'] = metadata
@@ -171,7 +173,7 @@ def predict(
             eval_loss.append(loss_total)
 
             # Save rollout in testing
-            if FLAGS.mode == 'rollout':
+            if config['mode'] == 'rollout':
                 example_output['metadata'] = metadata
                 # Use the actual case name from metadata instead of generic rollout_i
                 simulation_name = metadata['file_test'][example_i]
@@ -184,11 +186,10 @@ def predict(
                 filename = f'{case_name}.pkl'
                 
                 # Create subfolder using run_name, similar to model saving
-                save_dir = osp.join(FLAGS.output_path, FLAGS.run_name)
-                if not os.path.exists(save_dir):
-                    os.makedirs(save_dir)
+                save_dir = Path(config['output_path']) / config['run_name']
+                save_dir.mkdir(parents=True, exist_ok=True)
                 
-                filename = os.path.join(save_dir, filename)
+                filename = save_dir / filename
                 with open(filename, 'wb') as f:
                     pickle.dump(example_output, f)
 
@@ -196,17 +197,17 @@ def predict(
         sum(eval_loss) / len(eval_loss)))
 
 
-def load_model(simulator, FLAGS, device):
+def load_model(simulator, device):
     """Load model and training state."""
-    model_path = FLAGS.model_path + FLAGS.run_name + '/'
+    model_path = config['model_path'] + config['run_name'] + '/'
     
-    if os.path.exists(model_path + FLAGS.model_file) and os.path.exists(
-        model_path + FLAGS.train_state_file):
+    if os.path.exists(model_path + config['model_file']) and os.path.exists(
+        model_path + config['train_state_file']):
         # load model
-        simulator.load(model_path + FLAGS.model_file)
+        simulator.load(model_path + config['model_file'])
 
         # load train state
-        train_state = torch.load(model_path + FLAGS.train_state_file)
+        train_state = torch.load(model_path + config['train_state_file'])
         # set optimizer state
         optimizer = torch.optim.Adam(simulator.parameters())
         optimizer.load_state_dict(train_state["optimizer_state"])
@@ -215,8 +216,8 @@ def load_model(simulator, FLAGS, device):
         step = train_state["global_train_state"].pop("step")
 
     else:
-        msg = f'''Specified model_file {model_path + FLAGS.model_file}
-        and train_state_file {model_path + FLAGS.train_state_file} not found.'''
+        msg = f'''Specified model_file {model_path + config['model_file']}
+        and train_state_file {model_path + config['train_state_file']} not found.'''
         raise FileNotFoundError(msg)
     
     return simulator, step
@@ -239,17 +240,17 @@ def train(
     Args:
       simulator: Get MultiScaleSimulator.
     """
-    optimizer = torch.optim.Adam(simulator.parameters(), lr=FLAGS.lr_init)
+    optimizer = torch.optim.Adam(simulator.parameters(), lr=config['lr_init'])
     
     # Load training data
     data_samples = get_multi_scale_data_loader_by_samples(
-        path=osp.join(FLAGS.data_path, 'train.npz'),
-        input_length_sequence=FLAGS.input_sequence_length,
-        batch_size=FLAGS.batch_size,
+        path=str(Path(config['data_path']) / 'train.npz'),
+        input_length_sequence=config['input_sequence_length'],
+        batch_size=config['batch_size'],
         shuffle=True,
-        num_scales=FLAGS.num_scales,
-        window_size=FLAGS.window_size,
-        radius_multiplier=FLAGS.radius_multiplier
+        num_scales=config['num_scales'],
+        window_size=config['window_size'],
+        radius_multiplier=config['radius_multiplier']
     )
     
     # Set static graph for the simulator
@@ -259,10 +260,10 @@ def train(
     simulator.set_static_graph(first_batch['graph'])
     
     print(f"🚀 Starting multi-scale GNN training...")
-    print(f"   - Scales: {FLAGS.num_scales}, Window: {FLAGS.window_size}")
-    print(f"   - Batch size: {FLAGS.batch_size}")
-    print(f"   - Training steps: {FLAGS.ntraining_steps}")
-    print(f"   - Learning rate: {FLAGS.lr_init}")
+    print(f"   - Scales: {config['num_scales']}, Window: {config['window_size']}")
+    print(f"   - Batch size: {config['batch_size']}")
+    print(f"   - Training steps: {config['ntraining_steps']}")
+    print(f"   - Learning rate: {config['lr_init']}")
     
     step = 0
     not_reached_nsteps = True
@@ -284,7 +285,7 @@ def train(
                 
                 # Sample noise for training
                 sampled_noise = noise_utils.get_random_walk_noise_for_position_sequence(
-                    position, noise_std_last_step=FLAGS.noise_std
+                    position, noise_std_last_step=config['noise_std']
                 ).to(device)
                 
                 # Forward pass
@@ -316,7 +317,7 @@ def train(
                 optimizer.step()
                 
                 # Update learning rate
-                lr_new = FLAGS.lr_init * (FLAGS.lr_decay ** (step / FLAGS.lr_decay_steps)) + 1e-6
+                lr_new = config['lr_init'] * (config['lr_decay'] ** (step / config['lr_decay_steps'])) + 1e-6
                 for param in optimizer.param_groups:
                     param['lr'] = lr_new
                 
@@ -326,7 +327,7 @@ def train(
                 log["train/loss"] = loss
                 log["train/loss-x"] = loss_xy[0]
                 log["train/loss-y"] = loss_xy[1]
-                if FLAGS.dim == 3:
+                if config['dim'] == 3:
                     log["train/loss-z"] = loss_xy[2]
                 log["train/loss-strain"] = loss_strain.mean()
                 log["lr"] = lr_new
@@ -335,16 +336,15 @@ def train(
                     print(f"Step {step}: Total Loss = {loss.item():.6f}, Position Loss = {loss_pos.mean().item():.6f}, Strain Loss = {loss_strain.mean().item():.6f}")
                 
                 # Save model and validate periodically
-                if step % FLAGS.nsave_steps == 0 and step > 0:
-                    save_dir = osp.join(FLAGS.model_path, FLAGS.run_name)
-                    if not os.path.exists(save_dir):
-                        os.makedirs(save_dir)
-                    simulator.save(osp.join(save_dir, f'model-{step:06}.pt'))
+                if step % config['nsave_steps'] == 0 and step > 0:
+                    save_dir = Path(config['model_path']) / config['run_name']
+                    save_dir.mkdir(parents=True, exist_ok=True)
+                    simulator.save(str(save_dir / f'model-{step:06}.pt'))
                     train_state = dict(
                         optimizer_state=optimizer.state_dict(), 
                         global_train_state={"step": step}
                     )
-                    torch.save(train_state, osp.join(save_dir, f'train_state-{step:06}.pt'))
+                    torch.save(train_state, str(save_dir / f'train_state-{step:06}.pt'))
                     print(f"💾 Model saved at step {step}")
                     
                     # Full validation during training
@@ -353,16 +353,16 @@ def train(
                     
                     # Load validation trajectories
                     data_trajs = get_multi_scale_data_loader_by_trajectories(
-                        path=f"{FLAGS.data_path}valid.npz",
-                        num_scales=FLAGS.num_scales,
-                        window_size=FLAGS.window_size,
-                        radius_multiplier=FLAGS.radius_multiplier
+                        path=f"{config['data_path']}valid.npz",
+                        num_scales=config['num_scales'],
+                        window_size=config['window_size'],
+                        radius_multiplier=config['radius_multiplier']
                     )
                     
                     eval_loss_total, eval_loss_position, eval_loss_strain, eval_loss_oneStep = [], [], [], []
                     with torch.no_grad():
                         for example_i, data_traj in enumerate(data_trajs):
-                            nsteps = metadata['sequence_length'] - FLAGS.input_sequence_length
+                            nsteps = metadata['sequence_length'] - config['input_sequence_length']
                             n_particles_per_example = data_traj['n_particles_per_example'].to(device)
                             positions = data_traj['positions'].to(device)
                             particle_type = data_traj['particle_type'].to(device)
@@ -379,10 +379,10 @@ def train(
                                 n_particles_per_example=n_particles_per_example,
                                 strains=strains,
                                 nsteps=nsteps,
-                                dim=FLAGS.dim,
+                                dim=config['dim'],
                                 device=device,
-                                input_sequence_length=FLAGS.input_sequence_length,
-                                inference_mode=FLAGS.inference_mode
+                                input_sequence_length=config['input_sequence_length'],
+                                inference_mode=config['inference_mode']
                             )
                             
                             example_output['metadata'] = metadata
@@ -412,7 +412,7 @@ def train(
                             print(f"===================Better model obtained.=============================")
                             lowest_eval_loss = eval_loss_mean
                             print(f"===================Saving best model (val_loss: {eval_loss_mean:.6f}).=============================")
-                            simulator.save(osp.join(save_dir, f'model-best-{step:06}.pt'))
+                            simulator.save(str(save_dir / f'model-best-{step:06}.pt'))
                             # Also save training state for the best model
                             train_state = dict(
                                 optimizer_state=optimizer.state_dict(), 
@@ -428,10 +428,10 @@ def train(
                     # Set back to training mode
                     simulator.train()
                 
-                if FLAGS.log:
+                if config['log']:
                     wandb.log(log, step=step)
                     
-                if step >= FLAGS.ntraining_steps:
+                if step >= config['ntraining_steps']:
                     not_reached_nsteps = False
                     break
                     
@@ -439,19 +439,18 @@ def train(
         print("Training interrupted by user")
     
     # Save final model only if no validation was performed (fallback)
-    save_dir = osp.join(FLAGS.model_path, FLAGS.run_name)
-    if not os.path.exists(save_dir):
-        os.makedirs(save_dir)
+    save_dir = Path(config['model_path']) / config['run_name']
+    save_dir.mkdir(parents=True, exist_ok=True)
     
     # Only save final model if no best model was saved during validation
     if lowest_eval_loss == float('inf'):
         print("No validation performed - saving final model as fallback")
-        simulator.save(osp.join(save_dir, f'model-final-{step:06}.pt'))
+        simulator.save(str(save_dir / f'model-final-{step:06}.pt'))
         train_state = dict(
             optimizer_state=optimizer.state_dict(), 
             global_train_state={"step": step}
         )
-        torch.save(train_state, osp.join(save_dir, f'train_state-final-{step:06}.pt'))
+        torch.save(train_state, str(save_dir / f'train_state-final-{step:06}.pt'))
     else:
         print(f"✅ Training completed! Best model already saved (val_loss: {lowest_eval_loss:.6f})")
     
@@ -492,69 +491,84 @@ def _get_simulator(
     
     # Calculate node input features
     # (input_sequence_length-1) velocity timesteps * dim + wall distance + particle type embedding (if multiple types)
-    nnode_in = (FLAGS.input_sequence_length - 1) * FLAGS.dim + 1
+    nnode_in = (config['input_sequence_length'] - 1) * config['dim'] + 1
     if num_particle_types > 1:
-        nnode_in += FLAGS.particle_type_embedding_size
+        nnode_in += config['particle_type_embedding_size']
     
     simulator = MultiScaleSimulator(
-        kinematic_dimensions=FLAGS.dim,
+        kinematic_dimensions=config['dim'],
         nnode_in=nnode_in,
-        nedge_in=FLAGS.dim + 1,  # relative displacement + distance
-        nedge_out=FLAGS.hidden_dim,  # latent edge dimension
-        latent_dim=FLAGS.hidden_dim,
-        nmessage_passing_steps=FLAGS.layers,
+        nedge_in=config['dim'] + 1,  # relative displacement + distance
+        nedge_out=config['hidden_dim'],  # latent edge dimension
+        latent_dim=config['hidden_dim'],
+        nmessage_passing_steps=config['layers'],
         nmlp_layers=2,
         normalization_stats=normalization_stats,
         nparticle_types=num_particle_types,
-        particle_type_embedding_size=FLAGS.particle_type_embedding_size,
-        num_scales=FLAGS.num_scales,
-        window_size=FLAGS.window_size,
-        radius_multiplier=FLAGS.radius_multiplier,
+        particle_type_embedding_size=config['particle_type_embedding_size'],
+        num_scales=config['num_scales'],
+        window_size=config['window_size'],
+        radius_multiplier=config['radius_multiplier'],
         device=device
     )
     
     print(f"✅ MultiScaleSimulator created:")
-    print(f"   - Kinematic dimensions: {FLAGS.dim}")
+    print(f"   - Kinematic dimensions: {config['dim']}")
     print(f"   - Node input features: {nnode_in}")
-    print(f"   - Edge input features: {FLAGS.dim + 1}")
-    print(f"   - Latent dimension: {FLAGS.hidden_dim}")
-    print(f"   - Message passing steps: {FLAGS.layers}")
-    print(f"   - Multi-scale scales: {FLAGS.num_scales}")
-    print(f"   - Window size: {FLAGS.window_size}")
-    print(f"   - Radius multiplier: {FLAGS.radius_multiplier}")
+    print(f"   - Edge input features: {config['dim'] + 1}")
+    print(f"   - Latent dimension: {config['hidden_dim']}")
+    print(f"   - Message passing steps: {config['layers']}")
+    print(f"   - Multi-scale scales: {config['num_scales']}")
+    print(f"   - Window size: {config['window_size']}")
+    print(f"   - Radius multiplier: {config['radius_multiplier']}")
 
     return simulator
 
 
-def main(_):
+def main():
     """Train or evaluates the model."""
+    # Parse arguments
+    parser = argparse.ArgumentParser(description='Multi-Scale GNN Training')
+    parser.add_argument('--config', type=str, default='gns/multi_scale/config.yaml',
+                       help='Path to configuration file')
+    args = parser.parse_args()
+    
+    # Load configuration
+    global config
+    try:
+        config = load_config(args.config)
+        print(f"✅ Loaded config from: {args.config}")
+    except Exception as e:
+        print(f"❌ Failed to load config: {e}")
+        sys.exit(1)
+    
     # Set device
     device = torch.device('cuda' if torch.cuda.is_available() else 'cpu')
     print(f"device = {device}")
     
     # Load metadata
-    metadata_path = osp.join(FLAGS.data_path, 'metadata.json')
+    metadata_path = Path(config['data_path']) / 'metadata.json'
     with open(metadata_path, 'r') as f:
         metadata = json.load(f)
     
     # Create simulator
-    simulator = _get_simulator(metadata, FLAGS.noise_std, FLAGS.noise_std, device)
+    simulator = _get_simulator(metadata, config['noise_std'], config['noise_std'], device)
     simulator.to(device)
     
-    if FLAGS.mode == 'train':
+    if config['mode'] == 'train':
         # Init wandb
-        if FLAGS.log:
-            wandb.init(project=FLAGS.project_name, name=FLAGS.run_name)
+        if config['log']:
+            wandb.init(project=config['project_name'], name=config['run_name'])
             train(simulator, metadata, device)
             wandb.finish()
         else:
             train(simulator, metadata, device)
-    elif FLAGS.mode == 'valid':
+    elif config['mode'] == 'valid':
         # Load model for validation
-        if FLAGS.model_file is not None:
-            model_path = osp.join(FLAGS.model_path, FLAGS.run_name, FLAGS.model_file)
-            if os.path.exists(model_path):
-                simulator.load(model_path)
+        if config['model_file'] is not None:
+            model_path = Path(config['model_path']) / config['run_name'] / config['model_file']
+            if model_path.exists():
+                simulator.load(str(model_path))
                 print(f"✅ Loaded model from {model_path}")
             else:
                 print(f"❌ Model file not found: {model_path}")
@@ -563,22 +577,22 @@ def main(_):
         # Run full validation
         val_metrics = validate_multi_scale_simulator(
             simulator=simulator,
-            data_path=f"{FLAGS.data_path}valid.npz",
+            data_path=f"{config['data_path']}valid.npz",
             metadata=metadata,
             device=device,
-            input_sequence_length=FLAGS.input_sequence_length,
-            inference_mode=FLAGS.inference_mode,
-            num_scales=FLAGS.num_scales,
-            window_size=FLAGS.window_size,
-            radius_multiplier=FLAGS.radius_multiplier
+            input_sequence_length=config['input_sequence_length'],
+            inference_mode=config['inference_mode'],
+            num_scales=config['num_scales'],
+            window_size=config['window_size'],
+            radius_multiplier=config['radius_multiplier']
         )
         
         print(f"🎯 Final validation results:")
         for key, value in val_metrics.items():
             print(f"   {key}: {value:.6f}")
-    elif FLAGS.mode == 'rollout':
+    elif config['mode'] == 'rollout':
         predict(simulator, metadata, device)
 
 
 if __name__ == '__main__':
-    app.run(main)
+    main()

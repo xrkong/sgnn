@@ -17,7 +17,7 @@ layers: 5
 hidden_dim: 64
 dim: 2
 particle_type_embedding_size: 9
-input_sequence_length: 3
+input_sequence_length: 11
 
 # Training Parameters
 batch_size: 32

@@ -26,6 +26,9 @@ class MultiScaleConfig:
             window_size: Sampling window size for coarser levels
             radius_multiplier: Multiplier for all connectivity radius calculations
         """
+        if num_scales < 2:
+            raise ValueError(f"num_scales must be >= 2 (need grid + at least 1 mesh level), got {num_scales}")
+        
         self.num_scales = num_scales    # total scales: 0=grid, 1=mesh1, 2=mesh2
         self.window_size = window_size  # sampling window size for coarser scales
         self.grid_spacing = 0.5         # mm - original particle grid spacing

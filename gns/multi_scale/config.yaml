@@ -1,6 +1,12 @@
-# Multi-Scale GNN Training Configuration
+# Multi-Scale GNN Configuration
+# This single config file is used for all modes (train/valid/rollout)
+# to ensure consistency between training and inference
 
 # Mode & Paths
+# mode: 'train', 'valid', or 'rollout'
+# - train: Train a new model (set model_file to null or to resume from checkpoint)
+# - valid: Validate trained model on validation set (requires model_file)
+# - rollout: Generate predictions on test set (requires model_file)
 mode: train
 data_path: "./datasets/taylor_impact_2d/data_processed/"
 model_path: "./models/"
@@ -23,7 +29,7 @@ input_sequence_length: 11
 batch_size: 32
 noise_std: 0.02
 ntraining_steps: 10000
-nsave_steps: 1000
+nsave_steps: 1000  # Validation frequency (model saved only if better)
 
 # Learning Rate
 lr_init: 0.001
@@ -35,8 +41,10 @@ log: false
 project_name: "Taylor_impact_2d_MS"
 run_name: "MS_default"
 
-# Model Loading (optional)
-model_file: null
+# Model Loading (required for 'valid' and 'rollout' modes)
+# For rollout/validation: set to trained model filename (e.g., 'model-final-000010.pt' or 'model-best-001000.pt')
+# For training: set to null (trains from scratch) or specify to resume training
+model_file: null  # Example: "model-final-000010.pt" for rollout mode
 train_state_file: "train_state.pt"
 
 # Inference

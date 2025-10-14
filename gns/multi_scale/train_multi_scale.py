@@ -324,17 +324,10 @@ def train(
                 if step % 10 == 0:
                     print(f"Step {step}: Total Loss = {loss.item():.6f}, Position Loss = {loss_pos.mean().item():.6f}, Strain Loss = {loss_strain.mean().item():.6f}, VRAM: {current_memory:.1f}MB")
                 
-                # Save model and validate periodically
+                # Validate periodically and save only if better
                 if step % config['nsave_steps'] == 0 and step > 0:
                     save_dir = Path(config['model_path']) / config['run_name']
                     save_dir.mkdir(parents=True, exist_ok=True)
-                    simulator.save(str(save_dir / f'model-{step:06}.pt'))
-                    train_state = dict(
-                        optimizer_state=optimizer.state_dict(), 
-                        global_train_state={"step": step}
-                    )
-                    torch.save(train_state, str(save_dir / f'train_state-{step:06}.pt'))
-                    print(f"💾 Model saved at step {step}")
                     
                     # Full validation during training
                     print(f"🔍 Running full validation at step {step}...")
@@ -404,17 +397,23 @@ def train(
                         print(f"Mean loss on valid-set rollout prediction: {eval_loss_mean}. Current lowest eval loss is {lowest_eval_loss}.")
                         print(f"  Validation runtime: {val_time:.2f}s, VRAM: {max_val_memory:.1f}MB")
                         
-                        # Save the current best model based on eval loss
+                        # Save only if better than previous best
                         if eval_loss_mean < lowest_eval_loss:
-                            print(f"===================Better model obtained.=============================")
                             lowest_eval_loss = eval_loss_mean
-                            print(f"===================Saving best model (val_loss: {eval_loss_mean:.6f}).=============================")
+                            print(f"✅ Better model obtained! Saving checkpoint (val_loss: {eval_loss_mean:.6f})")
+                            
+                            # Save model
                             simulator.save(str(save_dir / f'model-best-{step:06}.pt'))
-                            # Also save training state for the best model
+                            
+                            # Save training state
                             train_state = dict(
                                 optimizer_state=optimizer.state_dict(), 
-                                global_train_state={"step": step}
+                                global_train_state={"step": step, "lowest_eval_loss": lowest_eval_loss}
                             )
+                            torch.save(train_state, str(save_dir / f'train_state-best-{step:06}.pt'))
+                            print(f"💾 Model and training state saved at step {step}")
+                        else:
+                            print(f"⚠️  No improvement (current: {eval_loss_mean:.6f}, best: {lowest_eval_loss:.6f})")
                         
                         # Log validation metrics
                         log["val/loss"] = sum(eval_loss_total) / len(eval_loss_total)
@@ -438,23 +437,23 @@ def train(
     except KeyboardInterrupt:
         print("Training interrupted by user")
     
-    # Save final model only if no validation was performed (fallback)
+    # Final summary
     save_dir = Path(config['model_path']) / config['run_name']
     save_dir.mkdir(parents=True, exist_ok=True)
     
-    # Only save final model if no best model was saved during validation
+    # Only save fallback model if no validation was performed (no best model saved)
     if lowest_eval_loss == float('inf'):
-        print("No validation performed - saving final model as fallback")
+        print("\n⚠️  No validation performed during training - saving final model as fallback")
         simulator.save(str(save_dir / f'model-final-{step:06}.pt'))
         train_state = dict(
             optimizer_state=optimizer.state_dict(), 
             global_train_state={"step": step}
         )
         torch.save(train_state, str(save_dir / f'train_state-final-{step:06}.pt'))
+        print(f"💾 Fallback model saved to {save_dir}")
     else:
-        print(f"✅ Training completed! Best model already saved (val_loss: {lowest_eval_loss:.6f})")
-    
-    print(f"Training completed! Check {save_dir} for saved models")
+        print(f"\n✅ Training completed! Best model saved at validation loss: {lowest_eval_loss:.6f}")
+        print(f"📁 Model location: {save_dir}")
     
     # Print benchmark summary
     print("\n" + "="*70)
@@ -539,6 +538,10 @@ def main():
     parser = argparse.ArgumentParser(description='Multi-Scale GNN Training')
     parser.add_argument('--config', type=str, default='gns/multi_scale/config.yaml',
                        help='Path to configuration file')
+    parser.add_argument('--mode', type=str, choices=['train', 'valid', 'rollout'],
+                       help='Override mode from config file (train/valid/rollout)')
+    parser.add_argument('--model_file', type=str,
+                       help='Override model_file from config (required for valid/rollout modes)')
     args = parser.parse_args()
     
     # Load configuration
@@ -549,6 +552,15 @@ def main():
     except Exception as e:
         print(f"❌ Failed to load config: {e}")
         sys.exit(1)
+    
+    # Override config with command-line arguments
+    if args.mode is not None:
+        config['mode'] = args.mode
+        print(f"   Mode overridden to: {args.mode}")
+    
+    if args.model_file is not None:
+        config['model_file'] = args.model_file
+        print(f"   Model file overridden to: {args.model_file}")
     
     # Set device
     device = torch.device('cuda' if torch.cuda.is_available() else 'cpu')

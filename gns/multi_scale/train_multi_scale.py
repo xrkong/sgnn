@@ -252,6 +252,7 @@ def train(
     print(f"   - Batch size: {config['batch_size']}")
     print(f"   - Training steps: {config['ntraining_steps']}")
     print(f"   - Learning rate: {config['lr_init']}")
+    print(f"   - Loss weights: Position={config['loss_weight_position']}, Strain={config['loss_weight_strain']}")
     
     step = 0
     not_reached_nsteps = True
@@ -296,7 +297,9 @@ def train(
 
                 # Calculate strain loss
                 loss_strain = (pred_strain - next_strain) ** 2
-                loss = loss_pos + loss_strain
+                
+                # Apply loss weights
+                loss = config['loss_weight_position'] * loss_pos + config['loss_weight_strain'] * loss_strain
                 loss = loss.mean()
                 
                 # Backward pass
@@ -313,11 +316,12 @@ def train(
                 
                 # WandB logging
                 log["train/loss"] = loss
+                log["train/loss-position"] = loss_pos.mean()
+                log["train/loss-strain"] = loss_strain.mean()
                 log["train/loss-x"] = loss_xy[0]
                 log["train/loss-y"] = loss_xy[1]
                 if config['dim'] == 3:
                     log["train/loss-z"] = loss_xy[2]
-                log["train/loss-strain"] = loss_strain.mean()
                 log["lr"] = lr_new
                 
                 # Track memory usage

@@ -25,20 +25,24 @@ particle_type_embedding_size: 9
 input_sequence_length: 11
 
 # Training Parameters
-batch_size: 32
+batch_size: 16
 noise_std: 0.02
-ntraining_steps: 100000
+ntraining_steps: 50000
 nsave_steps: 2000  # Validation frequency (model saved only if better)
+
+# Loss Weights
+loss_weight_position: 1.0  # Weight for position/acceleration loss
+loss_weight_strain: 0.0    # Weight for strain loss
 
 # Learning Rate
 lr_init: 0.001
 lr_decay: 0.1
-lr_decay_steps: 30000
+lr_decay_steps: 15000
 
 # Logging
 log: True
 project_name: "Taylor_impact_2d"
-run_name: "2-2-2-10-128-11"
+run_name: "2-2-2-10-128-11-noStrain"
 
 # Model Loading (required for 'valid' and 'rollout' modes)
 # For rollout/validation: set to trained model filename (e.g., 'model-final-000010.pt' or 'model-best-001000.pt')

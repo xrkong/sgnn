@@ -8,7 +8,7 @@
 # - valid: Validate trained model on validation set (requires model_file)
 # - rollout: Generate predictions on test set (requires model_file)
 mode: train
-data_path: "./datasets/taylor_impact_2d/onecase_data_processed/"
+data_path: "./datasets/taylor_impact_2d/data_processed/"
 model_path: "./models/"
 output_path: "./rollouts/"
 
@@ -18,8 +18,8 @@ window_size: 2
 radius_multiplier: 2.0
 
 # Model Parameters
-layers: 5
-hidden_dim: 64
+layers: 10
+hidden_dim: 128
 dim: 2
 particle_type_embedding_size: 9
 input_sequence_length: 11
@@ -27,18 +27,18 @@ input_sequence_length: 11
 # Training Parameters
 batch_size: 32
 noise_std: 0.02
-ntraining_steps: 20000
+ntraining_steps: 100000
 nsave_steps: 2000  # Validation frequency (model saved only if better)
 
 # Learning Rate
 lr_init: 0.001
 lr_decay: 0.1
-lr_decay_steps: 5000
+lr_decay_steps: 30000
 
 # Logging
 log: True
-project_name: "Taylor_impact_2d_OneCase"
-run_name: "MS_default"
+project_name: "Taylor_impact_2d"
+run_name: "2-2-2-10-128-11"
 
 # Model Loading (required for 'valid' and 'rollout' modes)
 # For rollout/validation: set to trained model filename (e.g., 'model-final-000010.pt' or 'model-best-001000.pt')

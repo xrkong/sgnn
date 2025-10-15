@@ -33,7 +33,7 @@ class MultiScaleConfig:
         self.window_size = window_size  # sampling window size for coarser scales
         self.grid_spacing = 0.5         # mm - original particle grid spacing
         self.radius_multiplier = radius_multiplier  # multiplier for all connectivity radius calculations
-        self.max_neighbors = 20         # maximum number of neighbors for all radius graphs
+        self.max_neighbors = 24         # maximum number of neighbors for all radius graphs
 
     
 class MultiScaleGraph:
@@ -222,7 +222,7 @@ class MultiScaleGraph:
         grid_edge_index = radius_graph(
             grid_positions, 
             r=connection_radius, 
-            loop=False,
+            loop=True,
             max_num_neighbors=self.config.max_neighbors
         )
         
@@ -269,7 +269,7 @@ class MultiScaleGraph:
         edge_index = radius_graph(
             positions, 
             r=scale_radius, 
-            loop=False,
+            loop=True,
             max_num_neighbors=self.config.max_neighbors
         )
         

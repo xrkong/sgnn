@@ -20,7 +20,7 @@ import os
 import sys
 sys.path.append(os.path.join(os.path.dirname(__file__), '..', '..', '..'))
 
-from gns.multi_scale.multi_scale_graph import MultiScaleGraph, MultiScaleConfig
+from sgnn.multi_scale.multi_scale_graph import MultiScaleGraph, MultiScaleConfig
 
 
 class TestMultiScaleConfig(unittest.TestCase):

@@ -10,7 +10,7 @@ import time
 from typing import Dict, List, Tuple, Any
 
 from sgnn.multi_scale.multi_scale_simulator import MultiScaleSimulator
-from sgnn.multi_scale.data_loader_multi_scale import (
+from sgnn.multi_scale.static_graph_data_loader import (
     MultiScaleTaylorImpactTrajectoriesDataset
 )
 

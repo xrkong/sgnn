@@ -24,12 +24,12 @@ sys.path.insert(0, str(PROJECT_ROOT))
 
 from sgnn.multi_scale.multi_scale_simulator import MultiScaleSimulator
 from sgnn import noise_utils
-from sgnn.multi_scale.data_loader_multi_scale import (
+from sgnn.multi_scale.static_graph_data_loader import (
     get_multi_scale_data_loader_by_samples,
     get_multi_scale_data_loader_by_trajectories
 )
-from sgnn.multi_scale import validate_multi_scale
-from sgnn.multi_scale.validate_multi_scale import validate_multi_scale_simulator
+from sgnn.multi_scale import evaluate as validate_multi_scale
+from sgnn.multi_scale.evaluate import validate_multi_scale_simulator
 from utils.resource_monitor import ResourceMonitor
 
 # Load configuration from file
@@ -543,7 +543,7 @@ def main():
     """Train or evaluates the model."""
     # Parse arguments
     parser = argparse.ArgumentParser(description='Multi-Scale GNN Training')
-    parser.add_argument('--config', type=str, default='sgnn/multi_scale/config.yaml',
+    parser.add_argument('--config', type=str, default='sgnn/multi_scale/multi_scale_config.yaml',
                        help='Path to configuration file')
     parser.add_argument('--mode', type=str, choices=['train', 'valid', 'rollout'],
                        help='Override mode from config file (train/valid/rollout)')

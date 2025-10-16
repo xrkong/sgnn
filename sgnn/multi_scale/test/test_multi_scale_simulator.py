@@ -14,8 +14,8 @@ import numpy as np
 # Add the parent directory to the path to import gns modules
 sys.path.append(os.path.join(os.path.dirname(__file__), '..', '..', '..'))
 
-from gns.multi_scale.multi_scale_simulator import MultiScaleSimulator
-from gns.multi_scale.data_loader_multi_scale import build_static_multi_scale_graph
+from sgnn.multi_scale.multi_scale_simulator import MultiScaleSimulator
+from sgnn.multi_scale.static_graph_data_loader import build_static_multi_scale_graph
 
 
 class TestMultiScaleSimulator(unittest.TestCase):

@@ -46,7 +46,7 @@ def build_static_multi_scale_graph(initial_positions: torch.Tensor,
         - 'mesh2mesh_edges': Edge indices for mesh to mesh connections  
         - 'mesh2grid_edges': Edge indices for mesh to grid connections
     """
-    from gns.multi_scale.multi_scale_graph import MultiScaleGraph, MultiScaleConfig
+    from sgnn.multi_scale.multi_scale_graph import MultiScaleGraph, MultiScaleConfig
     
     # Create configuration
     config = MultiScaleConfig(num_scales=num_scales, window_size=window_size, radius_multiplier=radius_multiplier)

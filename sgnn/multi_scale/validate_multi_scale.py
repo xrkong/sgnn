@@ -9,8 +9,8 @@ import torch
 import time
 from typing import Dict, List, Tuple, Any
 
-from gns.multi_scale.multi_scale_simulator import MultiScaleSimulator
-from gns.multi_scale.data_loader_multi_scale import (
+from sgnn.multi_scale.multi_scale_simulator import MultiScaleSimulator
+from sgnn.multi_scale.data_loader_multi_scale import (
     MultiScaleTaylorImpactTrajectoriesDataset
 )
 

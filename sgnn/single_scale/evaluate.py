@@ -6,9 +6,9 @@ import time
 from absl import flags
 from absl import app
 
-from gns import learned_simulator
-from gns import noise_utils
-from gns import reading_utils
+from sgnn.single_scale import learned_simulator
+from sgnn import noise_utils
+from utils import reading_utils
 from datasets.taylor_impact_2d.taylor_impact_data_loader import (
     get_data_loader_by_trajectories
 )

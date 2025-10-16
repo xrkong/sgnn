@@ -1,11 +1,3 @@
-#!/usr/bin/env python3
-"""
-Multi-Scale GNN Training Script for Taylor Impact Dataset
-
-This script trains a MultiScaleSimulator on the Taylor Impact dataset using static multi-scale graphs.
-It extends the original training script to support multi-scale graph neural networks.
-"""
-
 import json
 import os
 import sys
@@ -22,14 +14,14 @@ import wandb
 PROJECT_ROOT = Path(__file__).resolve().parent.parent.parent
 sys.path.insert(0, str(PROJECT_ROOT))
 
-from gns.multi_scale.multi_scale_simulator import MultiScaleSimulator
-from gns import noise_utils
-from gns.multi_scale.data_loader_multi_scale import (
-    get_multi_scale_data_loader_by_samples,
-    get_multi_scale_data_loader_by_trajectories
+from sgnn.single_scale import learned_simulator
+from sgnn import noise_utils
+from utils import reading_utils
+from datasets.taylor_impact_2d.taylor_impact_data_loader import (
+    get_data_loader_by_samples,
+    get_data_loader_by_trajectories
 )
-from gns.multi_scale import validate_multi_scale
-from gns.multi_scale.validate_multi_scale import validate_multi_scale_simulator
+from sgnn.single_scale import evaluate
 from utils.resource_monitor import ResourceMonitor
 
 # Load configuration from file
@@ -54,9 +46,11 @@ def load_config(config_path):
 # Global config - will be loaded in main()
 config = None
 
+KINEMATIC_PARTICLE_ID = -1
+
 
 def predict(
-        simulator: MultiScaleSimulator,
+        simulator: learned_simulator.LearnedSimulator,
         metadata: json,
         device: str):
     """Predict rollouts.
@@ -89,12 +83,8 @@ def predict(
     # Use `valid`` set for eval mode if not use `test`
     split = 'test' if config['mode'] == 'rollout' else 'valid'
 
-    data_trajs = get_multi_scale_data_loader_by_trajectories(
-        path=str(Path(config['data_path']) / f'{split}.npz'),
-        num_scales=config['num_scales'],
-        window_size=config['window_size'],
-        radius_multiplier=config['radius_multiplier']
-    )
+    data_trajs = get_data_loader_by_trajectories(
+        path=str(Path(config['data_path']) / f'{split}.npz'))
 
     eval_loss = []
     max_memory_overall = 0
@@ -110,23 +100,18 @@ def predict(
             positions = data_traj['positions'].to(device)
             particle_type = data_traj['particle_type'].to(device)
             strains = data_traj['strains'].to(device)
-            
-            # Set static graph for this trajectory
-            simulator.set_static_graph(data_traj['graph'])
                             
-            # Predict example rollout using multi-scale evaluate function
-            example_output = validate_multi_scale.evaluate_multi_scale_rollout(
-                simulator=simulator,
-                positions=positions,
-                particle_type=particle_type,
-                n_particles_per_example=n_particles_per_example,
-                strains=strains,
-                nsteps=nsteps,
-                dim=config['dim'],
-                device=device,
-                input_sequence_length=config['input_sequence_length'],
-                inference_mode=config['inference_mode']
-            )
+            # Predict example rollout
+            example_output = evaluate.rollout(simulator,
+                                              positions,
+                                              particle_type,
+                                              n_particles_per_example,
+                                              strains,
+                                              nsteps,
+                                              config['dim'],
+                                              device,
+                                              config['input_sequence_length'],
+                                              config['inference_mode'])
 
             example_output['metadata'] = metadata
 
@@ -178,8 +163,23 @@ def predict(
     print(f"Average runtime per rollout: {total_time / len(eval_loss):.2f}s")
     print(f"Peak VRAM usage: {max_memory_overall:.1f}MB")
     print("="*70)
-
-
+                  
+                  
+def optimizer_to(optim, device):
+    for param in optim.state.values():
+        # Not sure there are any global tensors in the state dict
+        if isinstance(param, torch.Tensor):
+            param.data = param.data.to(device)
+            if param._grad is not None:
+                param._grad.data = param._grad.data.to(device)
+        elif isinstance(param, dict):
+            for subparam in param.values():
+                if isinstance(subparam, torch.Tensor):
+                    subparam.data = subparam.data.to(device)
+                    if subparam._grad is not None:
+                        subparam._grad.data = subparam._grad.data.to(device)
+ 
+                        
 def load_model(simulator, device):
     """Load model and training state."""
     model_path = config['model_path'] + config['run_name'] + '/'
@@ -204,24 +204,16 @@ def load_model(simulator, device):
         raise FileNotFoundError(msg)
     
     return simulator, step
-
-
-def optimizer_to(optimizer, device):
-    """Move optimizer to device."""
-    for state in optimizer.state.values():
-        for k, v in state.items():
-            if isinstance(v, torch.Tensor):
-                state[k] = v.to(device)
-
+    
 
 def train(
-        simulator: MultiScaleSimulator,
+        simulator: learned_simulator.LearnedSimulator,
         metadata: json,
         device: str):
     """Train the model.
   
     Args:
-      simulator: Get MultiScaleSimulator.
+      simulator: Get LearnedSimulator.
     """
     # Initialize resource monitor
     monitor = ResourceMonitor(device)
@@ -229,26 +221,26 @@ def train(
     max_val_memory = 0
     
     optimizer = torch.optim.Adam(simulator.parameters(), lr=config['lr_init'])
+    step = 0
+    # If model_path does not exist create new directory and begin training.
+    model_path = config['model_path']
+    if not os.path.exists(model_path):
+        os.makedirs(model_path)
+        
+    # If model_path does exist and model_file and train_state_file exist continue training.
+    if config['model_file'] is not None:
+        simulator, step = load_model(simulator, device)
+        
+    simulator.train()
+    simulator.to(device)
+
+    data_samples = get_data_loader_by_samples(path=str(Path(config['data_path']) / 'train.npz'),
+                                            input_length_sequence=config['input_sequence_length'],
+                                            batch_size=config['batch_size'],
+                                            )
     
-    # Load training data
-    data_samples = get_multi_scale_data_loader_by_samples(
-        path=str(Path(config['data_path']) / 'train.npz'),
-        input_length_sequence=config['input_sequence_length'],
-        batch_size=config['batch_size'],
-        shuffle=True,
-        num_scales=config['num_scales'],
-        window_size=config['window_size'],
-        radius_multiplier=config['radius_multiplier']
-    )
-    
-    # Set static graph for the simulator
-    # Note: In a real implementation, you might want to handle multiple trajectories
-    # For now, we'll use the first batch's graph
-    first_batch = next(iter(data_samples))
-    simulator.set_static_graph(first_batch['graph'])
-    
-    print(f"🚀 Starting multi-scale GNN training...")
-    print(f"   - Scales: {config['num_scales']}, Window: {config['window_size']}")
+    print(f"🚀 Starting single-scale GNN training...")
+    print(f"   - Layers: {config['layers']}, Hidden dim: {config['hidden_dim']}")
     print(f"   - Batch size: {config['batch_size']}")
     print(f"   - Training steps: {config['ntraining_steps']}")
     print(f"   - Learning rate: {config['lr_init']}")
@@ -269,14 +261,13 @@ def train(
                 next_position = data_sample['output']['next_position'].to(device)
                 next_strain = data_sample['output']['next_strain'].to(device)
                 
-                # Set static graph for this batch
-                simulator.set_static_graph(data_sample['graph'])
-                
                 # Sample noise for training
                 sampled_noise = noise_utils.get_random_walk_noise_for_position_sequence(
                     position, noise_std_last_step=config['noise_std']
                 ).to(device)
-                
+                non_kinematic_mask = (particle_type != KINEMATIC_PARTICLE_ID).clone().detach().to(device)
+                sampled_noise *= non_kinematic_mask.view(-1, 1, 1)
+
                 # Forward pass
                 optimizer.zero_grad()
                 
@@ -287,7 +278,7 @@ def train(
                     nparticles_per_example=n_particles_per_example,
                     particle_types=particle_type
                 )
-                
+
                 # Calculate the loss
                 loss_pos = (pred_acc - target_acc) ** 2
                 loss_xy = loss_pos.mean(axis=0)  # for log purpose
@@ -300,13 +291,15 @@ def train(
                 
                 # Apply loss weights
                 loss = config['loss_weight_position'] * loss_pos + config['loss_weight_strain'] * loss_strain
-                loss = loss.mean()
-                
+                num_non_kinematic = non_kinematic_mask.sum()
+                loss = torch.where(non_kinematic_mask.bool(), loss, torch.zeros_like(loss))
+                loss = loss.sum() / num_non_kinematic
+
                 # Backward pass
                 optimizer.zero_grad()
                 loss.backward()
                 optimizer.step()
-                
+
                 # Update learning rate
                 lr_new = config['lr_init'] * (config['lr_decay'] ** (step / config['lr_decay_steps'])) + 1e-6
                 for param in optimizer.param_groups:
@@ -330,7 +323,7 @@ def train(
                 
                 if step % 10 == 0:
                     print(f"Step {step}: Total Loss = {loss.item():.6f}, Position Loss = {loss_pos.mean().item():.6f}, Strain Loss = {loss_strain.mean().item():.6f}, VRAM: {current_memory:.1f}MB")
-                
+
                 # Validate periodically and save only if better
                 if step % config['nsave_steps'] == 0 and step > 0:
                     save_dir = Path(config['model_path']) / config['run_name']
@@ -344,11 +337,8 @@ def train(
                     val_start_time = time.time()
                     
                     # Load validation trajectories
-                    data_trajs = get_multi_scale_data_loader_by_trajectories(
-                        path=f"{config['data_path']}valid.npz",
-                        num_scales=config['num_scales'],
-                        window_size=config['window_size'],
-                        radius_multiplier=config['radius_multiplier']
+                    data_trajs = get_data_loader_by_trajectories(
+                        path=str(Path(config['data_path']) / 'valid.npz')
                     )
                     
                     eval_loss_total, eval_loss_position, eval_loss_strain, eval_loss_oneStep = [], [], [], []
@@ -363,30 +353,25 @@ def train(
                             particle_type = data_traj['particle_type'].to(device)
                             strains = data_traj['strains'].to(device)
                             
-                            # Set static graph for this trajectory
-                            simulator.set_static_graph(data_traj['graph'])
-                            
-                            # Predict example rollout using multi-scale evaluate function
-                            example_output = validate_multi_scale.evaluate_multi_scale_rollout(
-                                simulator=simulator,
-                                positions=positions,
-                                particle_type=particle_type,
-                                n_particles_per_example=n_particles_per_example,
-                                strains=strains,
-                                nsteps=nsteps,
-                                dim=config['dim'],
-                                device=device,
-                                input_sequence_length=config['input_sequence_length'],
-                                inference_mode=config['inference_mode']
-                            )
+                            # Predict example rollout
+                            example_output = evaluate.rollout(simulator,
+                                                              positions,
+                                                              particle_type,
+                                                              n_particles_per_example,
+                                                              strains,
+                                                              nsteps,
+                                                              config['dim'],
+                                                              device,
+                                                              config['input_sequence_length'],
+                                                              config['inference_mode'])
                             
                             example_output['metadata'] = metadata
-                            
+
                             # RMSE loss with shape (time,)
                             loss_total = example_output['rmse_position'][-1] + example_output['rmse_strain'][-1]
                             loss_position = example_output['rmse_position'][-1]
                             loss_strain = example_output['rmse_strain'][-1]
-                            loss_oneStep = example_output['rmse_position'][0] + example_output['rmse_strain'][0]
+                            loss_oneStep = example_output['rmse_position'][0] + example_output['rmse_strain'][0]  
                             
                             print(f'''Predicting example {example_i}-
                                   {example_output['metadata']['file_valid'][example_i]} 
@@ -440,7 +425,7 @@ def train(
                 if step >= config['ntraining_steps']:
                     not_reached_nsteps = False
                     break
-                    
+
     except KeyboardInterrupt:
         print("Training interrupted by user")
     
@@ -475,8 +460,8 @@ def _get_simulator(
         metadata: json,
         acc_noise_std: float,
         vel_noise_std: float,
-        device: str) -> MultiScaleSimulator:
-    """Instantiates the multi-scale simulator.
+        device: str) -> learned_simulator.LearnedSimulator:
+    """Instantiates the simulator.
   
     Args:
       metadata: JSON object with metadata.
@@ -509,32 +494,27 @@ def _get_simulator(
     if num_particle_types > 1:
         nnode_in += config['particle_type_embedding_size']
     
-    simulator = MultiScaleSimulator(
-        kinematic_dimensions=config['dim'],
-        nnode_in=nnode_in,
-        nedge_in=config['dim'] + 1,  # relative displacement + distance
-        nedge_out=config['hidden_dim'],  # latent edge dimension
+    simulator = learned_simulator.LearnedSimulator(
+        particle_dimensions=config['dim'],  # xyz
+        nnode_in=nnode_in,  # (input_sequence_length-1) velocity timesteps * dim + wall distance
+        nedge_in=config['dim'] + 1,    # input edge features, relative displacement in all dims + distance between two nodes
         latent_dim=config['hidden_dim'],
         nmessage_passing_steps=config['layers'],
-        nmlp_layers=2,
+        nmlp_layers=1,
+        mlp_hidden_dim=config['hidden_dim'],
+        connectivity_radius=config['connection_radius'],
         normalization_stats=normalization_stats,
         nparticle_types=num_particle_types,
         particle_type_embedding_size=config['particle_type_embedding_size'],
-        num_scales=config['num_scales'],
-        window_size=config['window_size'],
-        radius_multiplier=config['radius_multiplier'],
-        device=device
-    )
+        device=device)
     
-    print(f"✅ MultiScaleSimulator created:")
-    print(f"   - Kinematic dimensions: {config['dim']}")
+    print(f"✅ LearnedSimulator created:")
+    print(f"   - Particle dimensions: {config['dim']}")
     print(f"   - Node input features: {nnode_in}")
     print(f"   - Edge input features: {config['dim'] + 1}")
     print(f"   - Latent dimension: {config['hidden_dim']}")
     print(f"   - Message passing steps: {config['layers']}")
-    print(f"   - Multi-scale scales: {config['num_scales']}")
-    print(f"   - Window size: {config['window_size']}")
-    print(f"   - Radius multiplier: {config['radius_multiplier']}")
+    print(f"   - Connectivity radius: {config['connection_radius']}")
 
     return simulator
 
@@ -542,13 +522,15 @@ def _get_simulator(
 def main():
     """Train or evaluates the model."""
     # Parse arguments
-    parser = argparse.ArgumentParser(description='Multi-Scale GNN Training')
-    parser.add_argument('--config', type=str, default='gns/multi_scale/config.yaml',
+    parser = argparse.ArgumentParser(description='Single-Scale GNN Training')
+    parser.add_argument('--config', type=str, default='sgnn/single_scale/config.yaml',
                        help='Path to configuration file')
     parser.add_argument('--mode', type=str, choices=['train', 'valid', 'rollout'],
                        help='Override mode from config file (train/valid/rollout)')
     parser.add_argument('--model_file', type=str,
                        help='Override model_file from config (required for valid/rollout modes)')
+    parser.add_argument('--log', type=str, choices=['True', 'False'],
+                       help='Override log setting from config (True/False)')
     args = parser.parse_args()
     
     # Load configuration
@@ -568,6 +550,10 @@ def main():
     if args.model_file is not None:
         config['model_file'] = args.model_file
         print(f"   Model file overridden to: {args.model_file}")
+    
+    if args.log is not None:
+        config['log'] = args.log == 'True'
+        print(f"   Log setting overridden to: {config['log']}")
     
     # Set device
     device = torch.device('cuda' if torch.cuda.is_available() else 'cpu')
@@ -590,34 +576,7 @@ def main():
             wandb.finish()
         else:
             train(simulator, metadata, device)
-    elif config['mode'] == 'valid':
-        # Load model for validation
-        if config['model_file'] is not None:
-            model_path = Path(config['model_path']) / config['run_name'] / config['model_file']
-            if model_path.exists():
-                simulator.load(str(model_path))
-                print(f"✅ Loaded model from {model_path}")
-            else:
-                print(f"❌ Model file not found: {model_path}")
-                return
-        
-        # Run full validation
-        val_metrics = validate_multi_scale_simulator(
-            simulator=simulator,
-            data_path=f"{config['data_path']}valid.npz",
-            metadata=metadata,
-            device=device,
-            input_sequence_length=config['input_sequence_length'],
-            inference_mode=config['inference_mode'],
-            num_scales=config['num_scales'],
-            window_size=config['window_size'],
-            radius_multiplier=config['radius_multiplier']
-        )
-        
-        print(f"🎯 Final validation results:")
-        for key, value in val_metrics.items():
-            print(f"   {key}: {value:.6f}")
-    elif config['mode'] == 'rollout':
+    elif config['mode'] in ['valid', 'rollout']:
         predict(simulator, metadata, device)
 
 

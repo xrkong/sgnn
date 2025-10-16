@@ -1,5 +1,4 @@
 import torch
-from gns import learned_simulator
 
 
 def get_random_walk_noise_for_position_sequence(
@@ -13,7 +12,9 @@ def get_random_walk_noise_for_position_sequence(
     noise_std_last_step: Standard deviation of noise in the last step.
 
   """
-  velocity_sequence = learned_simulator.time_diff(position_sequence)
+  # Import here to avoid circular imports
+  from sgnn.single_scale.learned_simulator import time_diff
+  velocity_sequence = time_diff(position_sequence)
 
   # We want the noise scale in the velocity at the last step to be fixed.
   # Because we are going to compose noise at each step using a random_walk:

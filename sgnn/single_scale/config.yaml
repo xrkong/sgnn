@@ -1,5 +1,5 @@
-# Multi-Scale GNN Configuration
-# This single config file is used for all modes (train/valid/rollout)
+# Single-Scale GNN Configuration
+# This config file is used for all modes (train/valid/rollout)
 # to ensure consistency between training and inference
 
 # Mode & Paths
@@ -9,40 +9,36 @@
 # - rollout: Generate predictions on test set (requires model_file)
 mode: train
 data_path: "./datasets/taylor_impact_2d/data_processed/"
-model_path: "./models/"
-output_path: "./rollouts/"
-
-# Multi-Scale Parameters
-num_scales: 2
-window_size: 2
-radius_multiplier: 2.0
+model_path: "./models/single_scale/"
+output_path: "./rollouts/single_scale/"
 
 # Model Parameters
-layers: 10
-hidden_dim: 128
+layers: 5
+hidden_dim: 64
 dim: 2
 particle_type_embedding_size: 9
 input_sequence_length: 11
+connection_radius: 0.6
 
 # Training Parameters
-batch_size: 16
+batch_size: 32
 noise_std: 0.02
-ntraining_steps: 50000
+ntraining_steps: 100000
 nsave_steps: 2000  # Validation frequency (model saved only if better)
 
 # Loss Weights
 loss_weight_position: 1.0  # Weight for position/acceleration loss
-loss_weight_strain: 0.0    # Weight for strain loss
+loss_weight_strain: 1.0    # Weight for strain loss
 
 # Learning Rate
 lr_init: 0.001
 lr_decay: 0.1
-lr_decay_steps: 15000
+lr_decay_steps: 30000
 
 # Logging
-log: True
+log: False
 project_name: "Taylor_impact_2d"
-run_name: "2-2-2-10-128-11-noStrain"
+run_name: "single_scale_default"
 
 # Model Loading (required for 'valid' and 'rollout' modes)
 # For rollout/validation: set to trained model filename (e.g., 'model-final-000010.pt' or 'model-best-001000.pt')
@@ -53,4 +49,3 @@ train_state_file: "train_state.pt"
 # Inference
 inference_mode: autoregressive
 debug_graph: false
-

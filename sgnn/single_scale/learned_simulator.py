@@ -1,7 +1,7 @@
 import torch
 import torch.nn as nn
 import numpy as np
-from gns import graph_network
+from . import graph_network
 from torch_geometric.nn import radius_graph
 from typing import Dict
 

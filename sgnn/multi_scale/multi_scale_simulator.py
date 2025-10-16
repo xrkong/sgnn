@@ -12,8 +12,8 @@ multi-scale graphs with cross-scale message passing.
 import torch
 import torch.nn as nn
 import numpy as np
-from gns.multi_scale.multi_scale_gnn import MultiScaleGNN
-from gns.multi_scale.multi_scale_graph import MultiScaleGraph, MultiScaleConfig
+from sgnn.multi_scale.multi_scale_gnn import MultiScaleGNN
+from sgnn.multi_scale.multi_scale_graph import MultiScaleGraph, MultiScaleConfig
 from typing import Dict, Tuple, Optional, Any
 
 

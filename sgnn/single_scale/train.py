@@ -47,7 +47,7 @@ def load_config(config_path):
 # Global config - will be loaded in main()
 config = None
 
-KINEMATIC_PARTICLE_ID = -1
+KINEMATIC_PARTICLE_ID = -1  # Not used for Taylor Impact; kept for backward-compat
 
 
 def predict(
@@ -167,16 +167,19 @@ def predict(
                   
                   
 def load_model(simulator, device):
-    """Wrapper using utils.checkpoint_utils to load model and state."""
+    """Wrapper using utils.checkpoint_utils to load model and optimizer state.
+
+    Returns (simulator, step, optimizer)
+    """
     model_dir = config['model_path'] + config['run_name'] + '/'
-    simulator, step, _ = ckpt_load_model(
+    simulator, step, optimizer = ckpt_load_model(
         simulator,
         model_dir,
         config['model_file'],
         config['train_state_file'],
         device,
     )
-    return simulator, step
+    return simulator, step, optimizer
     
 
 def train(
@@ -202,7 +205,7 @@ def train(
         
     # If model_path does exist and model_file and train_state_file exist continue training.
     if config['model_file'] is not None:
-        simulator, step = load_model(simulator, device)
+        simulator, step, optimizer = load_model(simulator, device)
         
     simulator.train()
     simulator.to(device)
@@ -238,8 +241,6 @@ def train(
                 sampled_noise = noise_utils.get_random_walk_noise_for_position_sequence(
                     position, noise_std_last_step=config['noise_std']
                 ).to(device)
-                non_kinematic_mask = (particle_type != KINEMATIC_PARTICLE_ID).clone().detach().to(device)
-                sampled_noise *= non_kinematic_mask.view(-1, 1, 1)
 
                 # Forward pass
                 optimizer.zero_grad()
@@ -262,11 +263,9 @@ def train(
                 # Calculate strain loss
                 loss_strain = (pred_strain - next_strain) ** 2
                 
-                # Apply loss weights
+                # Apply loss weights and average
                 loss = config['loss_weight_position'] * loss_pos + config['loss_weight_strain'] * loss_strain
-                num_non_kinematic = non_kinematic_mask.sum()
-                loss = torch.where(non_kinematic_mask.bool(), loss, torch.zeros_like(loss))
-                loss = loss.sum() / num_non_kinematic
+                loss = loss.mean()
 
                 # Backward pass
                 optimizer.zero_grad()

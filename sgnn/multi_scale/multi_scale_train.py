@@ -10,7 +10,6 @@ import json
 import os
 import sys
 import torch
-import pickle
 import yaml
 import argparse
 import time
@@ -28,10 +27,10 @@ from sgnn.multi_scale.static_graph_data_loader import (
     get_multi_scale_data_loader_by_samples,
     get_multi_scale_data_loader_by_trajectories
 )
-from sgnn.multi_scale import evaluate as validate_multi_scale
 from sgnn.multi_scale.multi_scale_evaluate import validate_multi_scale_simulator
+from sgnn.multi_scale.multi_scale_inference import run_inference
 from utils.resource_monitor import ResourceMonitor
-from utils.checkpoint_utils import load_model as ckpt_load_model, optimizer_to as ckpt_optimizer_to
+from utils.checkpoint_utils import load_model as ckpt_load_model
 
 # Load configuration from file
 def load_config(config_path):
@@ -56,133 +55,16 @@ def load_config(config_path):
 config = None
 
 
-def predict(
-        simulator: MultiScaleSimulator,
-        metadata: json,
-        device: str):
-    """Predict rollouts.
-  
-    Args:
-      simulator: Trained simulator if not will exit.
-      metadata: Metadata for test set.
-  
-    """
-    # Initialize resource monitor
-    monitor = ResourceMonitor(device)
-    
-    # Load simulator
-    try:
-        model_path = Path(config['model_path']) / config['run_name'] / config['model_file']
-        simulator.load(str(model_path))
-        print(f"✅ Loaded model from: {model_path}")
-    except Exception as e:
-        print(f"❌ Failed to load model weights from {config['model_path']}{config['run_name']}/{config['model_file']}")
-        print(f"Error: {e}")
-        sys.exit(1)
-
-    simulator.to(device)
-    simulator.eval()
-
-    # Output path
-    if not os.path.exists(config['output_path']):
-        os.makedirs(config['output_path'])
-
-    # Use `valid`` set for eval mode if not use `test`
-    split = 'test' if config['mode'] == 'rollout' else 'valid'
-
-    data_trajs = get_multi_scale_data_loader_by_trajectories(
-        path=str(Path(config['data_path']) / f'{split}.npz'),
-        num_scales=config['num_scales'],
-        window_size=config['window_size'],
-        radius_multiplier=config['radius_multiplier']
-    )
-
-    eval_loss = []
-    max_memory_overall = 0
-    total_time = 0
-    
-    with torch.no_grad():
-        for example_i, data_traj in enumerate(data_trajs):
-            # Start monitoring this rollout
-            monitor.start()
-            
-            nsteps = metadata['sequence_length'] - config['input_sequence_length']
-            n_particles_per_example = data_traj['n_particles_per_example'].to(device)
-            positions = data_traj['positions'].to(device)
-            particle_type = data_traj['particle_type'].to(device)
-            strains = data_traj['strains'].to(device)
-            
-            # Set static graph for this trajectory
-            simulator.set_static_graph(data_traj['graph'])
-                            
-            # Predict example rollout using multi-scale evaluate function
-            example_output = validate_multi_scale.evaluate_multi_scale_rollout(
-                simulator=simulator,
-                positions=positions,
-                particle_type=particle_type,
-                n_particles_per_example=n_particles_per_example,
-                strains=strains,
-                nsteps=nsteps,
-                dim=config['dim'],
-                device=device,
-                input_sequence_length=config['input_sequence_length'],
-                inference_mode=config['inference_mode']
-            )
-
-            example_output['metadata'] = metadata
-
-            # RMSE loss with shape (time,)
-            loss_total = example_output['rmse_position'][-1] + example_output['rmse_strain'][-1]
-            loss_position = example_output['rmse_position'][-1]
-            loss_strain = example_output['rmse_strain'][-1]
-            loss_oneStep = example_output['rmse_position'][0] + example_output['rmse_strain'][0]  
-
-            # Stop monitoring and get stats
-            stats = monitor.stop()
-            total_time += stats['elapsed_time']
-            max_memory_overall = max(max_memory_overall, stats['max_memory_mb'])
-            
-            print(f'''Predicting example {example_i}-
-                  {example_output['metadata']['file_valid'][example_i]} 
-                  loss_total: {loss_total}, 
-                  loss_position: {loss_position}, 
-                  loss_strain: {loss_strain}''')
-            print(f"  Runtime: {stats['elapsed_time']:.2f}s, VRAM: {stats['max_memory_mb']:.1f}MB")
-            eval_loss.append(loss_total)
-
-            # Save rollout in testing
-            if config['mode'] == 'rollout':
-                example_output['metadata'] = metadata
-                # Use the actual case name from metadata instead of generic rollout_i
-                simulation_name = metadata['file_test'][example_i]
-                # Remove .npz extension and create .pkl filename
-                case_name = simulation_name.replace('.npz', '')
-                
-                # Store the actual case name used for this rollout
-                example_output['case_name'] = case_name
-                
-                filename = f'{case_name}.pkl'
-                
-                # Create subfolder using run_name, similar to model saving
-                save_dir = Path(config['output_path']) / config['run_name']
-                save_dir.mkdir(parents=True, exist_ok=True)
-                
-                filename = save_dir / filename
-                with open(filename, 'wb') as f:
-                    pickle.dump(example_output, f)
-
-    print("\n" + "="*70)
-    print("📊 Rollout Benchmark Summary")
-    print("="*70)
-    print(f"Mean loss: {sum(eval_loss) / len(eval_loss):.6f}")
-    print(f"Total runtime: {total_time:.2f}s")
-    print(f"Average runtime per rollout: {total_time / len(eval_loss):.2f}s")
-    print(f"Peak VRAM usage: {max_memory_overall:.1f}MB")
-    print("="*70)
+def predict(simulator: MultiScaleSimulator, metadata: json, device: str):
+    """Delegate to standalone inference module for rollouts."""
+    return run_inference(simulator, metadata, config, device)
 
 
 def load_model(simulator, device):
-    """Wrapper using utils.checkpoint_utils to load model and state."""
+    """Wrapper using utils.checkpoint_utils to load model and optimizer state.
+
+    Returns (simulator, step, optimizer)
+    """
     model_dir = config['model_path'] + config['run_name'] + '/'
     simulator, step, optimizer = ckpt_load_model(
         simulator,
@@ -191,7 +73,7 @@ def load_model(simulator, device):
         config['train_state_file'],
         device,
     )
-    return simulator, step
+    return simulator, step, optimizer
 
 
 def train(
@@ -221,6 +103,14 @@ def train(
         radius_multiplier=config['radius_multiplier']
     )
     
+    # Resume from checkpoint if provided
+    if config.get('model_file'):
+        try:
+            simulator, step, optimizer = load_model(simulator, device)
+            print(f"✅ Resumed training from step {step}")
+        except FileNotFoundError as e:
+            print(f"⚠️  Resume requested but checkpoint not found: {e}. Starting fresh.")
+
     # Set static graph for the simulator
     # Note: In a real implementation, you might want to handle multiple trajectories
     # For now, we'll use the first batch's graph
@@ -315,101 +205,47 @@ def train(
                 if step % config['nsave_steps'] == 0 and step > 0:
                     save_dir = Path(config['model_path']) / config['run_name']
                     save_dir.mkdir(parents=True, exist_ok=True)
-                    
-                    # Full validation during training
+
                     print(f"🔍 Running full validation at step {step}...")
                     simulator.eval()
-                    
-                    # Monitor validation
-                    val_start_time = time.time()
-                    
-                    # Load validation trajectories
-                    data_trajs = get_multi_scale_data_loader_by_trajectories(
-                        path=f"{config['data_path']}valid.npz",
+
+                    # Centralized validation
+                    val_metrics = validate_multi_scale_simulator(
+                        simulator=simulator,
+                        data_path=str(Path(config['data_path']) / 'valid.npz'),
+                        metadata=metadata,
+                        device=device,
+                        input_sequence_length=config['input_sequence_length'],
+                        inference_mode=config['inference_mode'],
                         num_scales=config['num_scales'],
                         window_size=config['window_size'],
-                        radius_multiplier=config['radius_multiplier']
+                        radius_multiplier=config['radius_multiplier'],
                     )
-                    
-                    eval_loss_total, eval_loss_position, eval_loss_strain, eval_loss_oneStep = [], [], [], []
-                    with torch.no_grad():
-                        for example_i, data_traj in enumerate(data_trajs):
-                            # Track validation memory
-                            val_memory = monitor.get_current_memory()
-                            max_val_memory = max(max_val_memory, val_memory)
-                            nsteps = metadata['sequence_length'] - config['input_sequence_length']
-                            n_particles_per_example = data_traj['n_particles_per_example'].to(device)
-                            positions = data_traj['positions'].to(device)
-                            particle_type = data_traj['particle_type'].to(device)
-                            strains = data_traj['strains'].to(device)
-                            
-                            # Set static graph for this trajectory
-                            simulator.set_static_graph(data_traj['graph'])
-                            
-                            # Predict example rollout using multi-scale evaluate function
-                            example_output = validate_multi_scale.evaluate_multi_scale_rollout(
-                                simulator=simulator,
-                                positions=positions,
-                                particle_type=particle_type,
-                                n_particles_per_example=n_particles_per_example,
-                                strains=strains,
-                                nsteps=nsteps,
-                                dim=config['dim'],
-                                device=device,
-                                input_sequence_length=config['input_sequence_length'],
-                                inference_mode=config['inference_mode']
-                            )
-                            
-                            example_output['metadata'] = metadata
-                            
-                            # RMSE loss with shape (time,)
-                            loss_total = example_output['rmse_position'][-1] + example_output['rmse_strain'][-1]
-                            loss_position = example_output['rmse_position'][-1]
-                            loss_strain = example_output['rmse_strain'][-1]
-                            loss_oneStep = example_output['rmse_position'][0] + example_output['rmse_strain'][0]
-                            
-                            print(f'''Predicting example {example_i}-
-                                  {example_output['metadata']['file_valid'][example_i]} 
-                                  loss_total: {loss_total}, 
-                                  loss_position: {loss_position}, 
-                                  loss_strain: {loss_strain}''')
-                            print(f"Prediction example {example_i} takes {example_output['run_time']}")
-                            eval_loss_total.append(loss_total)
-                            eval_loss_position.append(loss_position)
-                            eval_loss_strain.append(loss_strain)
-                            eval_loss_oneStep.append(loss_oneStep)
-                        
-                        eval_loss_mean = sum(eval_loss_total) / len(eval_loss_total)
-                        val_time = time.time() - val_start_time
-                        print(f"Mean loss on valid-set rollout prediction: {eval_loss_mean}. Current lowest eval loss is {lowest_eval_loss}.")
-                        print(f"  Validation runtime: {val_time:.2f}s, VRAM: {max_val_memory:.1f}MB")
-                        
-                        # Save only if better than previous best
-                        if eval_loss_mean < lowest_eval_loss:
-                            lowest_eval_loss = eval_loss_mean
-                            print(f"✅ Better model obtained! Saving checkpoint (val_loss: {eval_loss_mean:.6f})")
-                            
-                            # Save model
-                            simulator.save(str(save_dir / f'model-best-{step:06}.pt'))
-                            
-                            # Save training state
-                            train_state = dict(
-                                optimizer_state=optimizer.state_dict(), 
-                                global_train_state={"step": step, "lowest_eval_loss": lowest_eval_loss}
-                            )
-                            torch.save(train_state, str(save_dir / f'train_state-best-{step:06}.pt'))
-                            print(f"💾 Model and training state saved at step {step}")
-                        else:
-                            print(f"⚠️  No improvement (current: {eval_loss_mean:.6f}, best: {lowest_eval_loss:.6f})")
-                        
-                        # Log validation metrics
-                        log["val/loss"] = sum(eval_loss_total) / len(eval_loss_total)
-                        log["val/loss-position"] = sum(eval_loss_position) / len(eval_loss_position)
-                        log["val/loss-strain"] = sum(eval_loss_strain) / len(eval_loss_strain)
-                        log["val/rmse-oneStep"] = sum(eval_loss_oneStep) / len(eval_loss_oneStep)
-                        log["val/runtime"] = val_time
-                        log["val/vram_mb"] = max_val_memory
-                    
+
+                    eval_loss_mean = float(val_metrics.get('rmse_total', val_metrics.get('eval_loss_mean', 0.0)))
+                    print(f"Mean loss on valid-set rollout prediction: {eval_loss_mean}. Current lowest eval loss is {lowest_eval_loss}.")
+
+                    # Save only if better than previous best
+                    if eval_loss_mean < lowest_eval_loss:
+                        lowest_eval_loss = eval_loss_mean
+                        print(f"✅ Better model obtained! Saving checkpoint (val_loss: {eval_loss_mean:.6f})")
+                        simulator.save(str(save_dir / f'model-best-{step:06}.pt'))
+                        train_state = dict(
+                            optimizer_state=optimizer.state_dict(),
+                            global_train_state={"step": step, "lowest_eval_loss": lowest_eval_loss},
+                        )
+                        torch.save(train_state, str(save_dir / f'train_state-best-{step:06}.pt'))
+                        print(f"💾 Model and training state saved at step {step}")
+                    else:
+                        print(f"⚠️  No improvement (current: {eval_loss_mean:.6f}, best: {lowest_eval_loss:.6f})")
+
+                    # Log validation metrics
+                    log["val/loss"] = eval_loss_mean
+                    if 'rmse_position' in val_metrics:
+                        log["val/loss-position"] = float(val_metrics['rmse_position'])
+                    if 'rmse_strain' in val_metrics:
+                        log["val/loss-strain"] = float(val_metrics['rmse_strain'])
+
                     # Set back to training mode
                     simulator.train()
                 
@@ -590,7 +426,7 @@ def main():
         # Run full validation
         val_metrics = validate_multi_scale_simulator(
             simulator=simulator,
-            data_path=f"{config['data_path']}valid.npz",
+            data_path=str(Path(config['data_path']) / 'valid.npz'),
             metadata=metadata,
             device=device,
             input_sequence_length=config['input_sequence_length'],

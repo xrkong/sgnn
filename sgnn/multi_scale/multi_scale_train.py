@@ -29,8 +29,9 @@ from sgnn.multi_scale.static_graph_data_loader import (
     get_multi_scale_data_loader_by_trajectories
 )
 from sgnn.multi_scale import evaluate as validate_multi_scale
-from sgnn.multi_scale.evaluate import validate_multi_scale_simulator
+from sgnn.multi_scale.multi_scale_evaluate import validate_multi_scale_simulator
 from utils.resource_monitor import ResourceMonitor
+from utils.checkpoint_utils import load_model as ckpt_load_model, optimizer_to as ckpt_optimizer_to
 
 # Load configuration from file
 def load_config(config_path):
@@ -181,37 +182,16 @@ def predict(
 
 
 def load_model(simulator, device):
-    """Load model and training state."""
-    model_path = config['model_path'] + config['run_name'] + '/'
-    
-    if os.path.exists(model_path + config['model_file']) and os.path.exists(
-        model_path + config['train_state_file']):
-        # load model
-        simulator.load(model_path + config['model_file'])
-
-        # load train state
-        train_state = torch.load(model_path + config['train_state_file'])
-        # set optimizer state
-        optimizer = torch.optim.Adam(simulator.parameters())
-        optimizer.load_state_dict(train_state["optimizer_state"])
-        optimizer_to(optimizer, device)
-        # set global train state
-        step = train_state["global_train_state"].pop("step")
-
-    else:
-        msg = f'''Specified model_file {model_path + config['model_file']}
-        and train_state_file {model_path + config['train_state_file']} not found.'''
-        raise FileNotFoundError(msg)
-    
+    """Wrapper using utils.checkpoint_utils to load model and state."""
+    model_dir = config['model_path'] + config['run_name'] + '/'
+    simulator, step, optimizer = ckpt_load_model(
+        simulator,
+        model_dir,
+        config['model_file'],
+        config['train_state_file'],
+        device,
+    )
     return simulator, step
-
-
-def optimizer_to(optimizer, device):
-    """Move optimizer to device."""
-    for state in optimizer.state.values():
-        for k, v in state.items():
-            if isinstance(v, torch.Tensor):
-                state[k] = v.to(device)
 
 
 def train(

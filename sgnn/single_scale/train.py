@@ -23,6 +23,7 @@ from datasets.taylor_impact_2d.taylor_impact_data_loader import (
 )
 from sgnn.single_scale import evaluate
 from utils.resource_monitor import ResourceMonitor
+from utils.checkpoint_utils import load_model as ckpt_load_model
 
 # Load configuration from file
 def load_config(config_path):
@@ -165,44 +166,16 @@ def predict(
     print("="*70)
                   
                   
-def optimizer_to(optim, device):
-    for param in optim.state.values():
-        # Not sure there are any global tensors in the state dict
-        if isinstance(param, torch.Tensor):
-            param.data = param.data.to(device)
-            if param._grad is not None:
-                param._grad.data = param._grad.data.to(device)
-        elif isinstance(param, dict):
-            for subparam in param.values():
-                if isinstance(subparam, torch.Tensor):
-                    subparam.data = subparam.data.to(device)
-                    if subparam._grad is not None:
-                        subparam._grad.data = subparam._grad.data.to(device)
- 
-                        
 def load_model(simulator, device):
-    """Load model and training state."""
-    model_path = config['model_path'] + config['run_name'] + '/'
-    
-    if os.path.exists(model_path + config['model_file']) and os.path.exists(
-        model_path + config['train_state_file']):
-        # load model
-        simulator.load(model_path + config['model_file'])
-
-        # load train state
-        train_state = torch.load(model_path + config['train_state_file'])
-        # set optimizer state
-        optimizer = torch.optim.Adam(simulator.parameters())
-        optimizer.load_state_dict(train_state["optimizer_state"])
-        optimizer_to(optimizer, device)
-        # set global train state
-        step = train_state["global_train_state"].pop("step")
-
-    else:
-        msg = f'''Specified model_file {model_path + config['model_file']}
-        and train_state_file {model_path + config['train_state_file']} not found.'''
-        raise FileNotFoundError(msg)
-    
+    """Wrapper using utils.checkpoint_utils to load model and state."""
+    model_dir = config['model_path'] + config['run_name'] + '/'
+    simulator, step, _ = ckpt_load_model(
+        simulator,
+        model_dir,
+        config['model_file'],
+        config['train_state_file'],
+        device,
+    )
     return simulator, step
     
 

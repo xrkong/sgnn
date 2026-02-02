@@ -39,7 +39,7 @@ The **Taylor Impact 2D** dataset can be downloaded from [OneDrive](https://curti
 ### 2. Preprocess Data  
 Run the following command to preprocess the dataset: 
 ```bash
-python -m sgnn.data_preprocessing --in_dir=[PATH_TO_NPZ_DIR] \
+python -m gns.data_preprocessing --in_dir=[PATH_TO_NPZ_DIR] \
                                  --out_dir=[PATH_TO_DATA_DIR] \
                                  --total_step=100 \
                                  --step_size=2 \
@@ -48,7 +48,7 @@ python -m sgnn.data_preprocessing --in_dir=[PATH_TO_NPZ_DIR] \
 
 ### 3. Train the Model  
 ```bash
-python -m sgnn.train --mode=train \
+python -m gns.train --mode=train \
                     --data_path=[PATH_TO_DATA_DIR] \
                     --model_path=./models/taylor/ \
                     --output_path=./rollouts/taylor/ \
@@ -66,7 +66,6 @@ python -m sgnn.train --mode=train \
                     --nsave_steps=1000 \
                     --log=False
 ```
-The command should be updated as parameters are now in a configure file.
 
 ### 4. Evaluate the Model  
 ```bash
@@ -82,11 +81,10 @@ python -m gns.train --mode=rollout \
                     --hidden_dim=64 \
                     --dim=2
 ```
-Should be updated as the same reason.
 
 ### 5. Visualize Results  
 ```bash
-python -m sgnn.render_rollout_2d_T --rollout_path={OUTPUT_PATH}/rollout_test_1.pkl \
+python -m gns.render_rollout_2d_T --rollout_path={OUTPUT_PATH}/rollout_test_1.pkl \
                                   --output_path={OUTPUT_PATH}/rollout_test_1.gif
 ```
 

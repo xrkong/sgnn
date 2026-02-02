@@ -4,7 +4,7 @@
 # Data paths
 # Use relative path that works across different computers
 # The data should be in: <workspace_root>/datasets/taylor_impact_2d/raw_data/
-raw_data_path: "/home/jovyan/share/EPIMETHEUS-LOCAL/8TB-share/share/qilin/gns_data/Concrete2D-T/npz/"
+raw_data_path: "/home/kong/xrkong/sgnn/npz"
 output_data_path: "./data_processed"
 
 # Dataset parameters

@@ -7,7 +7,7 @@
 # - train: Train a new model (set model_file to null or to resume from checkpoint)
 # - valid: Validate trained model on validation set (requires model_file)
 # - rollout: Generate predictions on test set (requires model_file)
-mode: train
+mode: rollout
 data_path: "./datasets/taylor_impact_2d/data_processed/"
 model_path: "./models/multi_scale/"
 output_path: "./rollouts/multi_scale/"
@@ -40,17 +40,17 @@ lr_decay: 0.1
 lr_decay_steps: 15000
 
 # Logging
-log: False
+log: True
 project_name: "Taylor_impact_2d"
 run_name: "2-2-2-10-128-11-noStrain"
 
 # Model Loading (required for 'valid' and 'rollout' modes)
 # For rollout/validation: set to trained model filename (e.g., 'model-final-000010.pt' or 'model-best-001000.pt')
 # For training: set to null (trains from scratch) or specify to resume training
-model_file: null  # Example: "model-final-000010.pt" for rollout mode
-train_state_file: "train_state.pt"
+model_file: "model-best-002000.pt"  # Example: "model-final-000010.pt" for rollout mode
+train_state_file: null
 
 # Inference
 inference_mode: autoregressive
-debug_graph: false
+debug_graph: True
 

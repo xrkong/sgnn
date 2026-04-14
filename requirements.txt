@@ -5,4 +5,5 @@ dm-tree
 matplotlib
 wandb
 pyyaml
-
+timm
+einops

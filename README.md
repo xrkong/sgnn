@@ -94,3 +94,12 @@ python -m sgnn.render_rollout_2d_T --rollout_path={OUTPUT_PATH}/rollout_test_1.p
 - Ensure that the dataset is properly formatted before preprocessing.  
 - Adjust the hyperparameters as needed for optimal model performance.  
 - GPU acceleration is recommended for training and evaluation.
+
+### Algorithmic Improvements
+- [x] block reporduction 
+- [x] visualization of experiments
+- [ ] visualization of attention heads
+
+### Functional Improvements
+- [ ] Transolver config files
+- [ ] Training and evaluation scripts that read from config files

@@ -21,14 +21,14 @@ import wandb
 PROJECT_ROOT = Path(__file__).resolve().parent.parent.parent
 sys.path.insert(0, str(PROJECT_ROOT))
 
-from sgnn.multi_scale.multi_scale_simulator import MultiScaleSimulator
+from sgnn.transolver.multi_scale_simulator import MultiScaleSimulator
 from sgnn import noise_utils
-from sgnn.multi_scale.static_graph_data_loader import (
+from sgnn.transolver.static_graph_data_loader import (
     get_multi_scale_data_loader_by_samples,
     get_multi_scale_data_loader_by_trajectories
 )
-from sgnn.multi_scale.multi_scale_evaluate import validate_multi_scale_simulator
-from sgnn.multi_scale.multi_scale_inference import run_inference
+from sgnn.transolver.multi_scale_evaluate import validate_multi_scale_simulator
+from sgnn.transolver.multi_scale_inference import run_inference
 from utils.resource_monitor import ResourceMonitor
 from utils.checkpoint_utils import load_model as ckpt_load_model
 
@@ -54,6 +54,8 @@ def load_config(config_path):
 # Global config - will be loaded in main()
 config = None
 
+CHECKPOINT_MANIFEST_FILENAME = "checkpoint_manifest.json"
+
 
 def predict(simulator: MultiScaleSimulator, metadata: json, device: str):
     """Delegate to standalone inference module for rollouts."""
@@ -76,6 +78,53 @@ def load_model(simulator, device):
     return simulator, step, optimizer
 
 
+def _load_checkpoint_history(manifest_path: Path) -> list[dict]:
+    """Load checkpoint metadata from disk if it exists."""
+    if not manifest_path.exists():
+        return []
+
+    try:
+        with open(manifest_path, "r") as f:
+            history = json.load(f)
+        if isinstance(history, list):
+            return history
+    except (OSError, json.JSONDecodeError):
+        pass
+
+    return []
+
+
+def _save_checkpoint_history(manifest_path: Path, history: list[dict]) -> None:
+    """Persist checkpoint metadata to disk."""
+    with open(manifest_path, "w") as f:
+        json.dump(history, f, indent=2)
+
+
+def _best_val_loss_from_history(history: list[dict]) -> float:
+    """Return the lowest val_loss found in the checkpoint history, or inf if none."""
+    losses = []
+    for record in history:
+        val_loss = record.get("val_loss")
+        if isinstance(val_loss, (int, float)):
+            losses.append(float(val_loss))
+    return min(losses) if losses else float('inf')
+
+
+def _prune_checkpoint_files(save_dir: Path, history: list[dict], keep_top_k: int = 3) -> list[dict]:
+    """Keep only the best checkpoints and delete the rest from disk."""
+    sorted_history = sorted(history, key=lambda record: (record["val_loss"], record["step"]))
+    kept_history = sorted_history[:keep_top_k]
+    pruned_history = sorted_history[keep_top_k:]
+
+    for record in pruned_history:
+        for filename_key in ("model_file", "train_state_file"):
+            file_path = save_dir / record[filename_key]
+            if file_path.exists():
+                file_path.unlink()
+
+    return kept_history
+
+
 def train(
         simulator: MultiScaleSimulator,
         metadata: json,
@@ -89,7 +138,13 @@ def train(
     monitor = ResourceMonitor(device)
     max_train_memory = 0
     max_val_memory = 0
-    
+    step = 0
+    save_dir = Path(config['model_path']) / config['run_name']
+    save_dir.mkdir(parents=True, exist_ok=True)
+    checkpoint_manifest_path = save_dir / CHECKPOINT_MANIFEST_FILENAME
+    checkpoint_history = _load_checkpoint_history(checkpoint_manifest_path)
+    lowest_eval_loss = _best_val_loss_from_history(checkpoint_history)
+
     optimizer = torch.optim.Adam(simulator.parameters(), lr=config['lr_init'])
     
     # Load training data
@@ -124,9 +179,7 @@ def train(
     print(f"   - Learning rate: {config['lr_init']}")
     print(f"   - Loss weights: Position={config['loss_weight_position']}, Strain={config['loss_weight_strain']}")
     
-    step = 0
     not_reached_nsteps = True
-    lowest_eval_loss = float('inf')
     
     try:
         while not_reached_nsteps:
@@ -201,11 +254,8 @@ def train(
                 if step % 10 == 0:
                     print(f"Step {step}: Total Loss = {loss.item():.6f}, Position Loss = {loss_pos.mean().item():.6f}, Strain Loss = {loss_strain.mean().item():.6f}, VRAM: {current_memory:.1f}MB")
                 
-                # Validate periodically and save only if better
+                # Validate periodically and save a checkpoint every nsave_steps.
                 if step % config['nsave_steps'] == 0 and step > 0:
-                    save_dir = Path(config['model_path']) / config['run_name']
-                    save_dir.mkdir(parents=True, exist_ok=True)
-
                     print(f"🔍 Running full validation at step {step}...")
                     simulator.eval()
 
@@ -228,28 +278,47 @@ def train(
                             val_metrics.get('rmse_total', val_metrics.get('eval_loss_mean', 0.0))
                         )
                     )
-                    print(f"Mean loss on valid-set rollout prediction: {eval_loss_mean}. Current lowest eval loss is {lowest_eval_loss}.")
 
-                    # Save only if better than previous best
-                    if eval_loss_mean < lowest_eval_loss:
-                        lowest_eval_loss = eval_loss_mean
-                        print(f"✅ Better model obtained! Saving checkpoint (val_loss: {eval_loss_mean:.6f})")
-                        simulator.save(str(save_dir / f'model-best-{step:06}.pt'))
-                        train_state = dict(
-                            optimizer_state=optimizer.state_dict(),
-                            global_train_state={"step": step, "lowest_eval_loss": lowest_eval_loss},
+                    model_filename = f'model-step-{step:06}.pt'
+                    train_state_filename = f'train_state-step-{step:06}.pt'
+
+                    simulator.save(str(save_dir / model_filename))
+                    # Save model and train_state before updating history so that pruning
+                    # cannot delete either file before it has been written to disk.
+                    train_state = dict(
+                        optimizer_state=optimizer.state_dict(),
+                        global_train_state={
+                            "step": step,
+                            "lowest_eval_loss": lowest_eval_loss
+                            },
+                    )
+                    print(f"Mean loss on valid-set rollout prediction: {eval_loss_mean}. Current lowest eval loss is {lowest_eval_loss}.")
+                    torch.save(train_state, str(save_dir / train_state_filename))
+
+                    checkpoint_history.append(
+                        dict(
+                            step=step,
+                            val_loss=eval_loss_mean,
+                            model_file=model_filename,
+                            train_state_file=train_state_filename,
                         )
-                        torch.save(train_state, str(save_dir / f'train_state-best-{step:06}.pt'))
-                        print(f"💾 Model and training state saved at step {step}")
+                    )
+                    checkpoint_history = _prune_checkpoint_files(save_dir, checkpoint_history, keep_top_k=3)
+                    _save_checkpoint_history(checkpoint_manifest_path, checkpoint_history)
+                    lowest_eval_loss = _best_val_loss_from_history(checkpoint_history)
+
+                    kept_steps = {record["step"] for record in checkpoint_history}
+                    if step in kept_steps:
+                        print(f"💾 Saved checkpoint at step {step} and kept it in the top 3 (val_loss: {eval_loss_mean:.6f})")
                     else:
-                        print(f"⚠️  No improvement (current: {eval_loss_mean:.6f}, best: {lowest_eval_loss:.6f})")
+                        print(f"🗑️  Saved checkpoint at step {step} but pruned it from top 3 (val_loss: {eval_loss_mean:.6f})")
 
                     # Log validation metrics
                     log["val/loss"] = eval_loss_mean
-                    if 'rmse_position' in val_metrics:
-                        log["val/loss-position"] = float(val_metrics['rmse_position'])
-                    if 'rmse_strain' in val_metrics:
-                        log["val/loss-strain"] = float(val_metrics['rmse_strain'])
+                    if 'val/loss_position' in val_metrics:
+                        log["val/loss-position"] = float(val_metrics['val/loss_position'])
+                    if 'val/loss_strain' in val_metrics:
+                        log["val/loss-strain"] = float(val_metrics['val/loss_strain'])
 
                     # Set back to training mode
                     simulator.train()
@@ -266,11 +335,8 @@ def train(
         print("Training interrupted by user")
     
     # Final summary
-    save_dir = Path(config['model_path']) / config['run_name']
-    save_dir.mkdir(parents=True, exist_ok=True)
-    
     # Only save fallback model if no validation was performed (no best model saved)
-    if lowest_eval_loss == float('inf'):
+    if not checkpoint_history:
         print("\n⚠️  No validation performed during training - saving final model as fallback")
         simulator.save(str(save_dir / f'model-final-{step:06}.pt'))
         train_state = dict(
@@ -280,7 +346,7 @@ def train(
         torch.save(train_state, str(save_dir / f'train_state-final-{step:06}.pt'))
         print(f"💾 Fallback model saved to {save_dir}")
     else:
-        print(f"\n✅ Training completed! Best model saved at validation loss: {lowest_eval_loss:.6f}")
+        print(f"\n✅ Training completed! Best retained checkpoint validation loss: {lowest_eval_loss:.6f}")
         print(f"📁 Model location: {save_dir}")
     
     # Print benchmark summary
@@ -333,14 +399,17 @@ def _get_simulator(
     simulator = MultiScaleSimulator(
         kinematic_dimensions=config['dim'],
         nnode_in=nnode_in,
-        nedge_in=config['dim'] + 1,  # relative displacement + distance
-        nedge_out=config['hidden_dim'],  # latent edge dimension
         latent_dim=config['hidden_dim'],
         nmessage_passing_steps=config['layers'],
-        nmlp_layers=2,
+        nmlp_layers=config.get('nmlp_layers', 2),
         normalization_stats=normalization_stats,
         nparticle_types=num_particle_types,
         particle_type_embedding_size=config['particle_type_embedding_size'],
+        num_heads=config.get('num_heads', 8),
+        dropout=config.get('dropout', 0.0),
+        mlp_ratio=config.get('mlp_ratio', 1),
+        block_act=config.get('block_act', 'gelu'),
+        slice_num=config.get('slice_num', 64),
         num_scales=config['num_scales'],
         window_size=config['window_size'],
         radius_multiplier=config['radius_multiplier'],
@@ -350,9 +419,15 @@ def _get_simulator(
     print(f"✅ MultiScaleSimulator created:")
     print(f"   - Kinematic dimensions: {config['dim']}")
     print(f"   - Node input features: {nnode_in}")
-    print(f"   - Edge input features: {config['dim'] + 1}")
     print(f"   - Latent dimension: {config['hidden_dim']}")
     print(f"   - Message passing steps: {config['layers']}")
+    print(
+        f"   - Transolver block: heads={config.get('num_heads', 8)}, "
+        f"dropout={config.get('dropout', 0.0)}, "
+        f"mlp_ratio={config.get('mlp_ratio', 1)}, "
+        f"act={config.get('block_act', 'gelu')}, "
+        f"slice_num={config.get('slice_num', 64)}"
+    )
     print(f"   - Multi-scale scales: {config['num_scales']}")
     print(f"   - Window size: {config['window_size']}")
     print(f"   - Radius multiplier: {config['radius_multiplier']}")
@@ -364,7 +439,7 @@ def main():
     """Train or evaluates the model."""
     # Parse arguments
     parser = argparse.ArgumentParser(description='Multi-Scale GNN Training')
-    parser.add_argument('--config', type=str, default='sgnn/multi_scale/multi_scale_config.yaml',
+    parser.add_argument('--config', type=str, default='sgnn/transolver/multi_scale_config.yaml',
                        help='Path to configuration file')
     parser.add_argument('--mode', type=str, choices=['train', 'valid', 'rollout'],
                        help='Override mode from config file (train/valid/rollout)')

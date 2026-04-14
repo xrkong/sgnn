@@ -215,7 +215,15 @@ pip install numpy pyyaml
 
 **Debug Mode**: Add `--verbose` flag for detailed processing information (if implemented)
 
-## Numerical Model (SPH) Metadata from .k file 
+## Numerical Model (SPH) Metadata from .k file
+
+### Number of SPH Particles (Finite Element Nodes)
+
+The `.k` file describes a 2D Taylor impact bar with **4801 SPH particles** (nodes):
+- Grid layout: 120 × 40 = **4800** particles on a uniform lattice with 0.5 mm spacing
+- x-range: 0.25 mm to 59.75 mm (120 points, step 0.5 mm)
+- y-range: −9.75 mm to 9.75 mm (40 points, step 0.5 mm)
+- 1 additional off-grid node observed in the file → **total: 4801 particles**
 
 ```json
 {

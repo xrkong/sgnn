@@ -100,6 +100,16 @@ def _save_checkpoint_history(manifest_path: Path, history: list[dict]) -> None:
         json.dump(history, f, indent=2)
 
 
+def _best_val_loss_from_history(history: list[dict]) -> float:
+    """Return the lowest val_loss found in the checkpoint history, or inf if none."""
+    losses = []
+    for record in history:
+        val_loss = record.get("val_loss")
+        if isinstance(val_loss, (int, float)):
+            losses.append(float(val_loss))
+    return min(losses) if losses else float('inf')
+
+
 def _prune_checkpoint_files(save_dir: Path, history: list[dict], keep_top_k: int = 3) -> list[dict]:
     """Keep only the best checkpoints and delete the rest from disk."""
     sorted_history = sorted(history, key=lambda record: (record["val_loss"], record["step"]))
@@ -133,8 +143,7 @@ def train(
     save_dir.mkdir(parents=True, exist_ok=True)
     checkpoint_manifest_path = save_dir / CHECKPOINT_MANIFEST_FILENAME
     checkpoint_history = _load_checkpoint_history(checkpoint_manifest_path)
-    # lowest_eval_loss = min((record["val_loss"] for record in checkpoint_history), default=float('inf'))
-    lowest_eval_loss = float('inf') 
+    lowest_eval_loss = _best_val_loss_from_history(checkpoint_history)
 
     optimizer = torch.optim.Adam(simulator.parameters(), lr=config['lr_init'])
     
@@ -274,11 +283,13 @@ def train(
                     train_state_filename = f'train_state-step-{step:06}.pt'
 
                     simulator.save(str(save_dir / model_filename))
+                    # Save model and train_state before updating history so that pruning
+                    # cannot delete either file before it has been written to disk.
                     train_state = dict(
                         optimizer_state=optimizer.state_dict(),
                         global_train_state={
                             "step": step,
-                            "lowest_eval_loss": min(lowest_eval_loss, eval_loss_mean)
+                            "lowest_eval_loss": lowest_eval_loss
                             },
                     )
                     print(f"Mean loss on valid-set rollout prediction: {eval_loss_mean}. Current lowest eval loss is {lowest_eval_loss}.")
@@ -294,7 +305,7 @@ def train(
                     )
                     checkpoint_history = _prune_checkpoint_files(save_dir, checkpoint_history, keep_top_k=3)
                     _save_checkpoint_history(checkpoint_manifest_path, checkpoint_history)
-                    lowest_eval_loss = min((record["val_loss"] for record in checkpoint_history), default=float('inf'))
+                    lowest_eval_loss = _best_val_loss_from_history(checkpoint_history)
 
                     kept_steps = {record["step"] for record in checkpoint_history}
                     if step in kept_steps:
